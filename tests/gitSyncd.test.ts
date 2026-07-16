@@ -73,10 +73,9 @@ describe("gitSyncd", () => {
     try {
       execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
       fs.writeFileSync(path.join(tmpCloneDir, "new.txt"), "hello");
-      execSync("git add . && git commit -m 'add new.txt'", {
-        cwd: tmpCloneDir,
-        env: { ...process.env, ...gitEnv },
-      });
+      const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
+      execSync("git add .", execOpts);
+      execSync('git commit -m "add new.txt"', execOpts);
       execSync("git push", { cwd: tmpCloneDir });
     } finally {
       fs.rmSync(tmpCloneDir, { recursive: true, force: true });
