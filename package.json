@@ -1,6 +1,6 @@
 {
   "name": "git-syncd",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "A library to keep git repositories in sync via git pull",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -8,6 +8,7 @@
     "dist"
   ],
   "scripts": {
+    "init": "npm i",
     "build": "tsc",
     "build:watch": "tsc --watch",
     "clean": "rm -rf dist",
