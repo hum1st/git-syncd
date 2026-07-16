@@ -2,14 +2,27 @@
   "name": "git-syncd",
   "version": "1.1.1",
   "description": "A library to keep git repositories in sync via git pull",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    }
+  },
   "files": [
     "dist"
   ],
   "scripts": {
     "init": "npm i",
-    "build": "tsc",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json",
     "build:watch": "tsc --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build",
@@ -30,13 +43,24 @@
       "**/tests/**/*.test.ts"
     ]
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hum1st/git-syncd"
+  },
   "keywords": [
     "git",
     "sync",
     "pull"
   ],
-  "author": "",
+  "author": "hum1st",
   "license": "MIT",
+  "homepage": "https://github.com/hum1st/git-syncd#readme",
+  "bugs": {
+    "url": "https://github.com/hum1st/git-syncd/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/jest": "^30.0.0",
