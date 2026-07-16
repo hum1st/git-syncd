@@ -204,9 +204,17 @@ describe("gitSyncdJob", () => {
     });
   });
 
-  test("返回带有 stop 方法的 job 对象", () => {
-    const job = gitSyncdJob({ cwd: localDir, interval: 60_000 });
-    expect(typeof job.stop).toBe("function");
-    job.stop();
+  test("返回带有 stop 方法的 job 对象", async () => {
+    await new Promise<void>((resolve) => {
+      const job = gitSyncdJob({
+        cwd: localDir,
+        interval: 60_000,
+        onSync: () => {
+          expect(typeof job.stop).toBe("function");
+          job.stop();
+          resolve();
+        },
+      });
+    });
   });
 });
