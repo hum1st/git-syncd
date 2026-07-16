@@ -1,0 +1,58 @@
+name: Publish to npm
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # 用于 npm provenance
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check if version already published
+        id: version_check
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "Checking $PKG_NAME@$PKG_VERSION on npm..."
+          if npm view "$PKG_NAME@$PKG_VERSION" version 2>/dev/null | grep -q "$PKG_VERSION"; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "Version $PKG_VERSION is already published, skipping."
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+            echo "Version $PKG_VERSION not found on npm, proceeding with publish."
+          fi
+
+      - name: Lint
+        if: steps.version_check.outputs.already_published == 'false'
+        run: npm run lint
+
+      - name: Test
+        if: steps.version_check.outputs.already_published == 'false'
+        run: npm test
+
+      - name: Build
+        if: steps.version_check.outputs.already_published == 'false'
+        run: npm run build
+
+      - name: Publish
+        if: steps.version_check.outputs.already_published == 'false'
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

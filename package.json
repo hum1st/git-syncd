@@ -1,6 +1,6 @@
 {
   "name": "git-syncd",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "A library to keep git repositories in sync via git pull",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -18,7 +18,9 @@
     "lint:fix": "eslint src tests --fix",
     "prepare": "husky",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "dev:setup": "node scripts/setup-repos.mjs",
+    "dev:sync": "node scripts/sync-repos.mjs"
   },
   "jest": {
     "preset": "ts-jest",
@@ -39,6 +41,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
     "eslint": "^10.7.0",
+    "globals": "^17.7.0",
     "husky": "^9.0.0",
     "jest": "^30.4.2",
     "lint-staged": "^15.0.0",
