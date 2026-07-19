@@ -142,6 +142,50 @@ describe("Windows sync 边界（platform=win32）", () => {
     expect(fs.readFileSync(path.join(localDir, "conflict.txt"), "utf8")).toBe("local");
   });
 
+  test("win32 物化时 cat-file blob 失败则抛错", async () => {
+    const cwd = path.join(tmpDir, "repo-catfile");
+    fs.mkdirSync(cwd);
+    execSync("git init", { cwd });
+    execSync("git checkout -b main", { cwd });
+
+    mockedSpawn.mockImplementation((_cmd, args) => {
+      const list = args as string[];
+      if (list.includes("--git-dir")) {
+        return createFakeChild({ exitCode: 0, stdout: ".git" });
+      }
+      if (list[0] === "rev-parse" && list.includes("refs/heads/main")) {
+        return createFakeChild({ exitCode: 0, stdout: "aaa111" });
+      }
+      if (list[0] === "fetch") {
+        return createFakeChild({ exitCode: 0, stdout: "" });
+      }
+      if (list[0] === "rev-parse" && list.includes("origin/main")) {
+        return createFakeChild({ exitCode: 0, stdout: "bbb222" });
+      }
+      if (
+        list.includes("symbolic-ref") ||
+        (list.includes("--abbrev-ref") && list.includes("HEAD"))
+      ) {
+        return createFakeChild({ exitCode: 0, stdout: "main" });
+      }
+      if (list.includes("merge-base")) {
+        return createFakeChild({ exitCode: 0, stdout: "aaa111" });
+      }
+      if (list[0] === "update-ref") {
+        return createFakeChild({ exitCode: 0, stdout: "" });
+      }
+      if (list.includes("ls-tree")) {
+        return createFakeChild({ exitCode: 0, stdout: "readme.txt\n" });
+      }
+      if (list.includes("cat-file") && list.includes("blob")) {
+        return createFakeChild({ exitCode: 1, stderr: "cat-file boom" });
+      }
+      return createFakeChild({ exitCode: 1 });
+    });
+
+    await expect(gitSyncd({ cwd, branch: "main", force: true })).rejects.toThrow("cat-file boom");
+  });
+
   test("win32 物化时 ls-tree 失败则抛错", async () => {
     const cwd = path.join(tmpDir, "repo");
     fs.mkdirSync(cwd);
