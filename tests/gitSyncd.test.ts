@@ -25,7 +25,7 @@ function setupRepos(): { bareDir: string; localDir: string; cleanUp: () => void 
     GIT_COMMITTER_EMAIL: "test@test.com",
   };
   fs.writeFileSync(path.join(localDir, "init.txt"), "init");
-  execSync("git add . && git commit -m 'init'", {
+  execSync('git add . && git commit -m "init"', {
     cwd: localDir,
     env: { ...process.env, ...gitEnv },
   });
@@ -610,7 +610,7 @@ describe("gitSyncd", () => {
 
   test("本地与远端真正发散时，force=true 丢弃本地独有提交并对齐远端", async () => {
     fs.writeFileSync(path.join(localDir, "local-only.txt"), "local");
-    execSync("git add . && git commit -m 'local only'", {
+    execSync('git add . && git commit -m "local only"', {
       cwd: localDir,
       env: { ...process.env, ...gitEnv },
     });
@@ -668,7 +668,7 @@ describe("gitSyncd", () => {
 
   test("仅本地领先且远端未变时，force=true 会丢弃本地独有提交以对齐远端", async () => {
     fs.writeFileSync(path.join(localDir, "ahead.txt"), "ahead");
-    execSync("git add . && git commit -m 'local ahead'", {
+    execSync('git add . && git commit -m "local ahead"', {
       cwd: localDir,
       env: { ...process.env, ...gitEnv },
     });
