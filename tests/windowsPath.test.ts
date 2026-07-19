@@ -1,44 +1,32 @@
+import { createHash } from "crypto";
+import { deflateSync } from "zlib";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { execFileSync, execSync } from "child_process";
 import gitSyncd, { sanitizeWindowsPath } from "../src/index";
 
-/** 通过 git 索引写入含 Windows 非法字符的路径（Unix 宿主机可用） */
-function gitAddIndexedPath(
-  cwd: string,
-  repoPath: string,
-  content: string,
-  env: NodeJS.ProcessEnv
-): void {
-  const hash = execFileSync("git", ["hash-object", "-w", "--stdin"], {
-    cwd,
-    input: content,
-    encoding: "utf8",
-    env,
-  }).trim();
-  execFileSync("git", ["update-index", "--add", "--cacheinfo", `100644,${hash},${repoPath}`], {
-    cwd,
-    env,
-  });
+/** 直接写入 git 对象库（绕过 Windows 对 docs/a:b.txt 等路径的校验） */
+function writeGitObject(gitDir: string, type: string, content: Buffer): string {
+  const header = Buffer.from(`${type} ${content.length}\0`);
+  const store = Buffer.concat([header, content]);
+  const oid = createHash("sha1").update(store).digest("hex");
+  const dir = path.join(gitDir, "objects", oid.slice(0, 2));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, oid.slice(2)), deflateSync(store));
+  return oid;
 }
 
-/** fast-import 载荷：Windows 宿主机无法用 update-index 写入 docs/a:b.txt */
-function buildWeirdPathFastImportPayload(): Buffer {
-  const chunks: Buffer[] = [];
-  const text = (s: string) => chunks.push(Buffer.from(s, "utf8"));
-  text("blob\nmark :1\ndata 5\n");
-  text("weird");
-  text("\nblob\nmark :2\ndata 6\n");
-  text("hello\n");
-  text(
-    "\ncommit refs/heads/main\n" +
-      "committer Test <test@test.com> 0 +0000\n" +
-      "data 0\n" +
-      "M 100644 :2 readme.txt\n" +
-      "M 100644 :1 docs/a:b.txt\n"
+function treeEntry(mode: string, name: string, hashHex: string): Buffer {
+  return Buffer.concat([Buffer.from(`${mode} ${name}\0`), Buffer.from(hashHex, "hex")]);
+}
+
+function buildTree(entries: Array<{ mode: string; name: string; hash: string }>): Buffer {
+  return Buffer.concat(
+    [...entries]
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .map((e) => treeEntry(e.mode, e.name, e.hash))
   );
-  return Buffer.concat(chunks);
 }
 
 /** 在 tmp 下创建含 docs/a:b.txt 的 bare 远端仓库 */
@@ -50,19 +38,31 @@ function setupWeirdPathBareRepo(base: string, env: NodeJS.ProcessEnv): string {
   execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/main"], { cwd: bareDir, env });
   execFileSync("git", ["clone", bareDir, seedDir], { env });
 
-  if (process.platform === "win32") {
-    execFileSync("git", ["fast-import"], {
-      cwd: seedDir,
-      input: buildWeirdPathFastImportPayload(),
-      env,
-    });
-  } else {
-    fs.writeFileSync(path.join(seedDir, "readme.txt"), "hello\n");
-    execFileSync("git", ["add", "readme.txt"], { cwd: seedDir, env });
-    gitAddIndexedPath(seedDir, "docs/a:b.txt", "weird", env);
-    execFileSync("git", ["commit", "-m", "init"], { cwd: seedDir, env });
-  }
+  const gitDir = path.join(seedDir, ".git");
+  const weirdHash = writeGitObject(gitDir, "blob", Buffer.from("weird", "utf8"));
+  const readmeHash = writeGitObject(gitDir, "blob", Buffer.from("hello\n", "utf8"));
+  const docsTreeHash = writeGitObject(gitDir, "tree", treeEntry("100644", "a:b.txt", weirdHash));
+  const rootTreeHash = writeGitObject(
+    gitDir,
+    "tree",
+    buildTree([
+      { mode: "40000", name: "docs", hash: docsTreeHash },
+      { mode: "100644", name: "readme.txt", hash: readmeHash },
+    ])
+  );
+  const commitHash = writeGitObject(
+    gitDir,
+    "commit",
+    Buffer.from(
+      `tree ${rootTreeHash}\n` +
+        "author Test <test@test.com> 0 +0000\n" +
+        "committer Test <test@test.com> 0 +0000\n\n" +
+        "init\n",
+      "utf8"
+    )
+  );
 
+  execFileSync("git", ["update-ref", "refs/heads/main", commitHash], { cwd: seedDir, env });
   execFileSync("git", ["branch", "-M", "main"], { cwd: seedDir, env });
   execFileSync("git", ["push", "-u", "origin", "main"], { cwd: seedDir, env });
   return bareDir;
