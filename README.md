@@ -55,12 +55,16 @@ Returns `true` when the repo was freshly cloned or the **target branch tip** mov
 1. Resolve target branch: `options.branch ?? "main"`
 2. `git fetch origin`
 3. Compare local `refs/heads/<target>` with `origin/<target>`
-4. If already equal → return `false` **without touching the working tree**
+4. If already equal → return `false` **without touching the working tree** (on Windows, if HEAD is on the target and the worktree is empty, files are materialized)
 5. Otherwise → fast-forward the target tip; on failure with `force: true`, hard-align to the remote tip
 6. **Never** `checkout` / switch the current branch
 7. Update the working tree **only if** HEAD is already on the target branch; otherwise only move `refs/heads/<target>`
 
 This separates “pull the target line to latest” from “switch the working checkout” (left to the caller).
+
+### Windows
+
+On `win32`, clone uses `git clone --no-checkout`, then materializes the worktree by reading blobs and writing files with illegal path characters (`* ? " < > | :`) stripped from each path segment. Updates on the target branch use the same materialization instead of `git reset --hard`, so paths that are illegal on Windows do not abort sync.
 
 ## API
 
@@ -71,13 +75,13 @@ This separates “pull the target line to latest” from “switch the working c
 | Option   | Type      | Default         | Description                                                                 |
 | -------- | --------- | --------------- | --------------------------------------------------------------------------- |
 | `cwd`    | `string`  | `process.cwd()` | Target git repository path                                                  |
-| `url`    | `string`  | —               | Remote URL. Required when `cwd` is not a git repo yet; runs `git clone -b <branch>` |
+| `url`    | `string`  | —               | Remote URL. Required when `cwd` is not a git repo yet; runs `git clone -b <branch>` (Windows: `--no-checkout` + safe materialize) |
 | `branch` | `string`  | `"main"`        | Target branch to sync (not necessarily the current checkout)                |
-| `force`  | `boolean` | `true`          | If the target tip cannot fast-forward, hard-align to remote. When HEAD is on the target, also reset/clean the worktree; otherwise only update the branch ref. No-op when already aligned |
+| `force`  | `boolean` | `true`          | If the target tip cannot fast-forward, hard-align to remote. When HEAD is on the target, also update the worktree; otherwise only update the branch ref. No-op when already aligned |
 
 #### Returns
 
-`Promise<boolean>` — `true` when freshly cloned or the target branch tip changed.
+`Promise<boolean>` — `true` when freshly cloned, the target branch tip changed, or a Windows empty worktree was materialized.
 
 ## License
 

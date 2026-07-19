@@ -18,14 +18,27 @@ export interface GitSyncdOptions {
   branch?: string;
   /**
    * 目标分支 tip 与远端不一致且无法快进时，是否强制将对齐到远端 tip。
-   * 若当前正检出于目标分支，还会 `reset --hard` / `clean` 工作区；
+   * 若当前正检出于目标分支，还会更新工作区；
    * 若当前不在目标分支，仅更新 `refs/heads/<branch>`，不改 HEAD/工作区。
-   * 目标 tip 已与远端一致时不会触碰工作区。默认为 true。
+   * 目标 tip 已与远端一致时不会触碰工作区（Windows 下工作区为空时除外）。
+   * 默认为 true。
    */
   force?: boolean;
 }
 
 type CmdOutcome = { ok: true; stdout: string } | { ok: false; message: string };
+
+/** Windows 文件名非法字符（路径段内） */
+const WIN_ILLEGAL = /[*?"<>|:]/g;
+
+function isWindows(): boolean {
+  return process.platform === "win32";
+}
+
+const GIT_ENV: NodeJS.ProcessEnv = {
+  ...process.env,
+  GIT_TERMINAL_PROMPT: "0",
+};
 
 /** 底层：执行一次 git 命令 */
 function runGit(cwd: string, args: string[]): Promise<CmdOutcome> {
@@ -35,6 +48,7 @@ function runGit(cwd: string, args: string[]): Promise<CmdOutcome> {
       stdio: ["ignore", "pipe", "pipe"],
       shell: false,
       windowsHide: true,
+      env: GIT_ENV,
     });
 
     let stdout = "";
@@ -101,14 +115,105 @@ async function getCurrentBranch(cwd: string): Promise<string | null> {
   return result.ok ? result.stdout : null;
 }
 
-/** clone 远程仓库到 cwd（-b branch） */
+/** 工作区是否除 `.git` 外还有内容 */
+function hasWorktreeFiles(cwd: string): boolean {
+  try {
+    return fs.readdirSync(cwd).some((name) => name !== ".git");
+  } catch {
+    return false;
+  }
+}
+
+/** 清空工作区（保留 `.git`） */
+function clearWorktree(cwd: string): void {
+  for (const name of fs.readdirSync(cwd)) {
+    if (name === ".git") continue;
+    fs.rmSync(path.join(cwd, name), { recursive: true, force: true });
+  }
+}
+
+/** 清洗 Windows 非法路径段；若整段被清空则跳过 */
+export function sanitizeWindowsPath(repoPath: string): string {
+  return repoPath
+    .split("/")
+    .map((seg) => seg.replace(WIN_ILLEGAL, "").trim())
+    .filter(Boolean)
+    .join("/");
+}
+
+/**
+ * Windows：不经 checkout，按 blob 将 ref 树物化到工作区。
+ * 路径中的非法字符会被剥离（与常见 docs 镜像策略一致）。
+ */
+async function materializeWorktreeWindows(cwd: string, ref: string): Promise<void> {
+  const list = await runGit(cwd, [
+    "-c",
+    "core.quotePath=false",
+    "ls-tree",
+    "-r",
+    "--name-only",
+    ref,
+  ]);
+  if (!list.ok) {
+    throw new Error(list.message);
+  }
+
+  clearWorktree(cwd);
+
+  const files = list.stdout.split("\n").filter(Boolean);
+  for (const file of files) {
+    const safe = sanitizeWindowsPath(file);
+    if (!safe) continue;
+
+    const outPath = path.join(cwd, ...safe.split("/"));
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+
+    const blob = await new Promise<Buffer>((resolve, reject) => {
+      const child = spawn(
+        "git",
+        ["-c", "core.quotePath=false", "cat-file", "blob", `${ref}:${file}`],
+        {
+          cwd,
+          stdio: ["ignore", "pipe", "pipe"],
+          shell: false,
+          windowsHide: true,
+          env: GIT_ENV,
+        }
+      );
+      const chunks: Buffer[] = [];
+      let stderr = "";
+      child.stdout.on("data", (d: Buffer) => chunks.push(d));
+      child.stderr.on("data", (d: Buffer) => {
+        stderr += d.toString();
+      });
+      child.on("close", (code) => {
+        if (code === 0) resolve(Buffer.concat(chunks));
+        else reject(new Error(stderr.trim() || `git cat-file blob failed for ${file}`));
+      });
+      /* istanbul ignore next */
+      child.on("error", reject);
+    });
+
+    fs.writeFileSync(outPath, blob);
+  }
+}
+
+/** clone 远程仓库到 cwd（-b branch）；Windows 使用 --no-checkout 再物化 */
 async function runClone(url: string, cwd: string, branch: string): Promise<void> {
   const parent = path.dirname(cwd);
   fs.mkdirSync(parent, { recursive: true });
 
-  const result = await runGit(parent, ["clone", "-b", branch, "--", url, cwd]);
+  const args = isWindows()
+    ? ["clone", "--no-checkout", "-b", branch, "--", url, cwd]
+    : ["clone", "-b", branch, "--", url, cwd];
+
+  const result = await runGit(parent, args);
   if (!result.ok) {
     throw new Error(result.message);
+  }
+
+  if (isWindows()) {
+    await materializeWorktreeWindows(cwd, "HEAD");
   }
 }
 
@@ -122,13 +227,33 @@ async function updateTargetRef(cwd: string, branch: string, tipSha: string): Pro
 
 /**
  * 当前正检出于目标分支时：快进或强制对齐工作区到远端 tip。
+ * Windows 避免 `reset --hard`（非法路径会失败），改为 update-ref + 物化。
  */
 async function syncCheckedOutTarget(
   cwd: string,
+  branch: string,
   upstreamRef: string,
+  tipSha: string,
   canFastForward: boolean,
   force: boolean
 ): Promise<CmdOutcome> {
+  if (isWindows()) {
+    if (!canFastForward && !force) {
+      return { ok: false, message: "Not possible to fast-forward to upstream tip" };
+    }
+    const updated = await updateTargetRef(cwd, branch, tipSha);
+    if (!updated.ok) return updated;
+    try {
+      await materializeWorktreeWindows(cwd, tipSha);
+      return { ok: true, stdout: "" };
+    } catch (err) {
+      return {
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   if (canFastForward) {
     const update = await runGit(cwd, ["merge", "--ff-only", upstreamRef]);
     if (update.ok || !force) {
@@ -150,13 +275,14 @@ async function syncCheckedOutTarget(
  * 通过子进程同步指定目录的 git 仓库。
  *
  * - 目标分支为 `branch`（默认 `main`），与当前 checkout 无关；
- * - 若 `cwd` 尚不是 git 仓库且提供了 `url`，则 `git clone -b <branch>` 初始化；
+ * - 若 `cwd` 尚不是 git 仓库且提供了 `url`，则 `git clone -b <branch>` 初始化
+ *   （Windows 为 `--no-checkout` + 安全物化工作区）；
  * - 否则 `git fetch` 后推进目标分支 tip 至 `origin/<branch>`（快进；`force` 时允许硬对齐）；
  * - **不会** `checkout` / 切换当前分支；
  * - 仅当当前正检出于目标分支时，才会更新工作区；否则只更新 `refs/heads/<branch>`。
- * - 目标 tip 已与远端一致时不会修改工作区（即使存在本地未提交变更）。
+ * - 目标 tip 已与远端一致时不会修改工作区（Windows 下工作区为空时会补物化）。
  *
- * @returns clone 成功，或目标分支 tip 发生变化时为 `true`，否则 `false`
+ * @returns clone 成功，或目标分支 tip 发生变化（或 Windows 补物化）时为 `true`，否则 `false`
  * @throws 同步失败时抛出 Error
  */
 async function gitSyncd(options: GitSyncdOptions = {}): Promise<boolean> {
@@ -188,21 +314,31 @@ async function gitSyncd(options: GitSyncdOptions = {}): Promise<boolean> {
     throw new Error((!probe.ok && probe.message) || `Cannot resolve ${upstreamRef}`);
   }
 
-  if (tipBefore !== null && tipBefore === remoteTip) {
-    // 目标分支已与远端 tip 一致：不触碰工作区（含本地脏文件）
-    return false;
-  }
-
   const currentBranch = await getCurrentBranch(cwd);
   const onTarget = currentBranch === branch;
 
-  // 本地尚无目标分支：创建 ref；若碰巧已在该分支名上（空仓库），则硬对齐工作区
+  if (tipBefore !== null && tipBefore === remoteTip) {
+    // tip 已对齐：通常不触碰工作区；Windows 且在目标分支上但工作区为空时补物化
+    if (isWindows() && onTarget && !hasWorktreeFiles(cwd)) {
+      await materializeWorktreeWindows(cwd, remoteTip);
+      return true;
+    }
+    return false;
+  }
+
+  // 本地尚无目标分支：创建 ref；若碰巧已在该分支名上，则对齐工作区
   if (tipBefore === null) {
     if (onTarget) {
-      await runResetHard(cwd);
-      const reset = await runGit(cwd, ["reset", "--hard", upstreamRef]);
-      if (!reset.ok) {
-        throw new Error(reset.message);
+      if (isWindows()) {
+        const created = await updateTargetRef(cwd, branch, remoteTip);
+        if (!created.ok) throw new Error(created.message);
+        await materializeWorktreeWindows(cwd, remoteTip);
+      } else {
+        await runResetHard(cwd);
+        const reset = await runGit(cwd, ["reset", "--hard", upstreamRef]);
+        if (!reset.ok) {
+          throw new Error(reset.message);
+        }
       }
     } else {
       const created = await updateTargetRef(cwd, branch, remoteTip);
@@ -218,7 +354,7 @@ async function gitSyncd(options: GitSyncdOptions = {}): Promise<boolean> {
 
   let update: CmdOutcome;
   if (onTarget) {
-    update = await syncCheckedOutTarget(cwd, upstreamRef, canFastForward, force);
+    update = await syncCheckedOutTarget(cwd, branch, upstreamRef, remoteTip, canFastForward, force);
   } else if (canFastForward || force) {
     update = await updateTargetRef(cwd, branch, remoteTip);
   } else {
