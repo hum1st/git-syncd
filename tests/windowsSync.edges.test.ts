@@ -50,12 +50,15 @@ describe("Windows sync 边界（platform=win32）", () => {
     GIT_COMMITTER_EMAIL: "test@test.com",
   };
 
-  let originalPlatform: PropertyDescriptor | undefined;
+  const realPlatform = process.platform;
   let tmpDir: string;
 
   beforeEach(() => {
-    originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
-    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      enumerable: true,
+      value: "win32",
+    });
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-win-edge-"));
     mockedSpawn.mockReset();
     mockedSpawn.mockImplementation(
@@ -67,7 +70,11 @@ describe("Windows sync 边界（platform=win32）", () => {
     mockedSpawn.mockImplementation(
       jest.requireActual<typeof import("child_process")>("child_process").spawn
     );
-    if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      enumerable: true,
+      value: realPlatform,
+    });
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -102,6 +109,37 @@ describe("Windows sync 边界（platform=win32）", () => {
     await expect(gitSyncd({ cwd: localDir, branch: "main", force: false })).rejects.toThrow(
       /fast-forward/
     );
+  });
+
+  test("win32 上 force=false 且工作区有本地变更时拒绝更新", async () => {
+    const bareDir = path.join(tmpDir, "remote.git");
+    const seedDir = path.join(tmpDir, "seed");
+    const localDir = path.join(tmpDir, "local");
+    execSync(`git init --bare "${bareDir}"`);
+    execSync("git symbolic-ref HEAD refs/heads/main", { cwd: bareDir });
+    execSync(`git clone "${bareDir}" "${seedDir}"`);
+    fs.writeFileSync(path.join(seedDir, "a.txt"), "v1");
+    const seedOpts = { cwd: seedDir, env: { ...process.env, ...gitEnv } };
+    execSync("git add .", seedOpts);
+    execSync('git commit -m "v1"', seedOpts);
+    execSync("git branch -M main", seedOpts);
+    execSync("git push -u origin main", { cwd: seedDir });
+
+    await gitSyncd({ cwd: localDir, url: bareDir, branch: "main" });
+
+    const other = path.join(tmpDir, "other");
+    execSync(`git clone "${bareDir}" "${other}"`);
+    fs.writeFileSync(path.join(other, "conflict.txt"), "remote");
+    const otherOpts = { cwd: other, env: { ...process.env, ...gitEnv } };
+    execSync("git add .", otherOpts);
+    execSync('git commit -m "remote conflict"', otherOpts);
+    execSync("git push", { cwd: other });
+
+    fs.writeFileSync(path.join(localDir, "conflict.txt"), "local");
+    await expect(gitSyncd({ cwd: localDir, branch: "main", force: false })).rejects.toThrow(
+      /local changes|force=false/i
+    );
+    expect(fs.readFileSync(path.join(localDir, "conflict.txt"), "utf8")).toBe("local");
   });
 
   test("win32 物化时 ls-tree 失败则抛错", async () => {

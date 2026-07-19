@@ -225,9 +225,16 @@ async function updateTargetRef(cwd: string, branch: string, tipSha: string): Pro
   return runGit(cwd, ["update-ref", `refs/heads/${branch}`, tipSha]);
 }
 
+/** 工作区是否有未提交变更（含未追踪文件） */
+async function worktreeIsDirty(cwd: string): Promise<boolean> {
+  const status = await runGit(cwd, ["status", "--porcelain"]);
+  return status.ok && status.stdout.trim().length > 0;
+}
+
 /**
  * 当前正检出于目标分支时：快进或强制对齐工作区到远端 tip。
  * Windows 避免 `reset --hard`（非法路径会失败），改为 update-ref + 物化。
+ * force=false 时若工作区有本地变更则拒绝更新（与 Unix merge 冲突语义一致）。
  */
 async function syncCheckedOutTarget(
   cwd: string,
@@ -240,6 +247,12 @@ async function syncCheckedOutTarget(
   if (isWindows()) {
     if (!canFastForward && !force) {
       return { ok: false, message: "Not possible to fast-forward to upstream tip" };
+    }
+    if (!force && (await worktreeIsDirty(cwd))) {
+      return {
+        ok: false,
+        message: "Working tree has local changes; refusing to update (force=false)",
+      };
     }
     const updated = await updateTargetRef(cwd, branch, tipSha);
     if (!updated.ok) return updated;

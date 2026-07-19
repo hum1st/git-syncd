@@ -23,20 +23,22 @@ describe("Windows clone 路径（runtime platform=win32）", () => {
     GIT_COMMITTER_EMAIL: "test@test.com",
   };
 
-  let originalPlatform: PropertyDescriptor | undefined;
+  const realPlatform = process.platform;
 
   beforeEach(() => {
-    originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
     Object.defineProperty(process, "platform", {
       configurable: true,
+      enumerable: true,
       value: "win32",
     });
   });
 
   afterEach(() => {
-    if (originalPlatform) {
-      Object.defineProperty(process, "platform", originalPlatform);
-    }
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      enumerable: true,
+      value: realPlatform,
+    });
   });
 
   test("win32 下 clone 使用 --no-checkout 并物化工作区", async () => {
