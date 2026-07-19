@@ -1,7 +1,7 @@
 {
   "name": "git-syncd",
-  "version": "1.2.0",
-  "description": "A library to keep git repositories in sync via git pull",
+  "version": "1.3.0",
+  "description": "A library to keep git repositories in sync via git clone/pull",
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/cjs/index.d.ts",

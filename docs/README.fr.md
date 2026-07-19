@@ -1,6 +1,6 @@
 # git-syncd
 
-Gardez vos dépôts git synchronisés via `git pull`.
+Gardez vos dépôts git synchronisés via `git pull` (et `git clone` si besoin).
 
 **Disponible en :** [English](../README.md) | [中文](README.zh.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [日本語](README.ja.md)
 
@@ -21,6 +21,19 @@ const updated = await gitSyncd();
 // Synchroniser un répertoire spécifique
 const updated = await gitSyncd({ cwd: "/path/to/repo" });
 
+// Cloner si absent, puis rester synchronisé
+const updated = await gitSyncd({
+  cwd: "/path/to/repo",
+  url: "https://github.com/org/repo.git",
+});
+
+// Branche spécifique (défaut : main)
+const updated = await gitSyncd({
+  cwd: "/path/to/repo",
+  url: "https://github.com/org/repo.git",
+  branch: "develop",
+});
+
 // En cas de modifications locales non validées, les supprimer et tirer (comportement par défaut)
 const updated = await gitSyncd({ cwd: "/path/to/repo", force: true });
 
@@ -31,7 +44,7 @@ if (updated) {
 }
 ```
 
-Retourne `true` si de nouveaux commits ont été récupérés, `false` si déjà à jour. Lève une `Error` en cas d'échec.
+Retourne `true` en cas de clone initial ou de nouveaux commits, `false` si déjà à jour. Lève une `Error` en cas d'échec.
 
 ## API
 
@@ -39,14 +52,16 @@ Retourne `true` si de nouveaux commits ont été récupérés, `false` si déjà
 
 #### Options
 
-| Option  | Type       | Défaut          | Description                                                                                                        |
-| ------- | ---------- | --------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `cwd`   | `string`   | `process.cwd()` | Chemin vers le dépôt git cible                                                                                     |
-| `force` | `boolean`  | `true`          | Si le pull échoue en raison de modifications locales, exécuter `git reset --hard HEAD` pour les supprimer et réessayer |
+| Option   | Type      | Défaut          | Description                                                                                                         |
+| -------- | --------- | --------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `cwd`    | `string`  | `process.cwd()` | Chemin vers le dépôt git cible                                                                                      |
+| `url`    | `string`  | —               | URL distante. Requise si `cwd` n'est pas encore un dépôt ; exécute `git clone -b <branch>`                          |
+| `branch` | `string`  | `"main"`        | Branche utilisée au clone. Si passée explicitement sur un dépôt existant : checkout puis `git pull`                 |
+| `force`  | `boolean` | `true`          | Si le pull échoue à cause de modifications locales : `git reset --hard HEAD` + `git clean -fd` puis nouvel essai    |
 
 #### Résultat
 
-`Promise<boolean>` — `true` lorsque HEAD a changé (nouveaux commits récupérés).
+`Promise<boolean>` — `true` après un clone initial ou lorsque HEAD a changé.
 
 ## Licence
 
