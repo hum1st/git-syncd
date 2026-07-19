@@ -68,6 +68,14 @@ describe("gitSyncd", () => {
     expect(updated).toBe(false);
   });
 
+  test("已是最新时，即使 force=true 也不清掉本地脏文件", async () => {
+    fs.writeFileSync(path.join(localDir, "dirty.txt"), "keep me");
+    const updated = await gitSyncd({ cwd: localDir, force: true });
+    expect(updated).toBe(false);
+    expect(fs.existsSync(path.join(localDir, "dirty.txt"))).toBe(true);
+    expect(fs.readFileSync(path.join(localDir, "dirty.txt"), "utf8")).toBe("keep me");
+  });
+
   test("有新提交时 pull 成功并同步文件，返回 true", async () => {
     // 在裸仓库侧通过第二个 clone 推送新内容
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-push-"));
@@ -182,7 +190,7 @@ describe("gitSyncd", () => {
     expect(fs.existsSync(path.join(targetDir, ".git"))).toBe(true);
   });
 
-  test("传入 url 且目标已是仓库时执行 pull", async () => {
+  test("传入 url 且目标已是仓库时执行同步", async () => {
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-url-pull-"));
     try {
       execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
@@ -209,7 +217,7 @@ describe("gitSyncd", () => {
     }
   });
 
-  test("显式传入 branch 时先 checkout 再 pull", async () => {
+  test("显式传入 branch 时先 checkout 再同步", async () => {
     // 远端创建 develop 分支并推送新文件
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-branch-"));
     try {
@@ -284,7 +292,7 @@ describe("gitSyncd", () => {
     ).rejects.toThrow();
   });
 
-  test("已在目标 branch 上时直接 pull", async () => {
+  test("已在目标 branch 上时直接同步", async () => {
     const updated = await gitSyncd({ cwd: localDir, branch: "main" });
     expect(updated).toBe(false);
   });
@@ -346,5 +354,57 @@ describe("gitSyncd", () => {
 
     fs.writeFileSync(path.join(localDir, "init.txt"), "local dirty");
     await expect(gitSyncd({ cwd: localDir, branch: "other", force: false })).rejects.toThrow();
+  });
+
+  test("无 upstream 跟踪时回退到 origin/<branch> 仍可同步", async () => {
+    const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-no-upstream-"));
+    try {
+      execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
+      fs.writeFileSync(path.join(tmpCloneDir, "no-up.txt"), "hello");
+      const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
+      execSync("git add .", execOpts);
+      execSync('git commit -m "add no-up.txt"', execOpts);
+      execSync("git push", { cwd: tmpCloneDir });
+    } finally {
+      fs.rmSync(tmpCloneDir, { recursive: true, force: true });
+    }
+
+    execSync("git branch --unset-upstream", { cwd: localDir });
+    const updated = await gitSyncd({ cwd: localDir });
+    expect(updated).toBe(true);
+    expect(fs.existsSync(path.join(localDir, "no-up.txt"))).toBe(true);
+  });
+
+  test("无 upstream 且已是最新时返回 false", async () => {
+    execSync("git branch --unset-upstream", { cwd: localDir });
+    const updated = await gitSyncd({ cwd: localDir });
+    expect(updated).toBe(false);
+  });
+
+  test("fetch 失败时抛出错误", async () => {
+    execSync("git remote set-url origin /nonexistent/remote.git", { cwd: localDir });
+    await expect(gitSyncd({ cwd: localDir })).rejects.toThrow();
+  });
+
+  test("detached HEAD 无法比较 upstream 时抛出错误", async () => {
+    execSync("git checkout --detach HEAD", { cwd: localDir });
+    await expect(gitSyncd({ cwd: localDir })).rejects.toThrow();
+  });
+
+  test("空仓库无 HEAD 时仍可完成同步流程", async () => {
+    const emptyDir = path.join(path.dirname(localDir), "empty-repo");
+    fs.mkdirSync(emptyDir, { recursive: true });
+    execSync("git init", { cwd: emptyDir });
+    execSync("git checkout -b main", { cwd: emptyDir });
+    execSync(`git remote add origin "${bareDir}"`, { cwd: emptyDir });
+
+    const updated = await gitSyncd({ cwd: emptyDir, branch: "main", force: true });
+    expect(updated).toBe(false);
+    expect(fs.existsSync(path.join(emptyDir, "init.txt"))).toBe(true);
+  });
+
+  test("无 upstream 且 origin 上无同名分支时抛出错误", async () => {
+    execSync("git checkout -b local-only", { cwd: localDir });
+    await expect(gitSyncd({ cwd: localDir })).rejects.toThrow();
   });
 });

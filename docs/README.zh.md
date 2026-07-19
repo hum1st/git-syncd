@@ -1,6 +1,6 @@
 # git-syncd
 
-通过 `git pull` 保持你的 git 仓库持续同步（本地不存在时可用 `git clone` 初始化）。
+通过 `git fetch` + 快进合并保持仓库同步（本地不存在时可用 `git clone` 初始化）。
 
 **其他语言：** [English](../README.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Français](README.fr.md) | [日本語](README.ja.md)
 
@@ -34,7 +34,7 @@ const updated = await gitSyncd({
   branch: "develop",
 });
 
-// 本地有未提交变更时，强制丢弃后拉取（默认行为）
+// 确认落后且本地变更挡住更新时，强制丢弃后对齐远端（默认行为）
 const updated = await gitSyncd({ cwd: "/path/to/repo", force: true });
 
 if (updated) {
@@ -44,7 +44,16 @@ if (updated) {
 }
 ```
 
-首次 clone 或有新提交时返回 `true`，已是最新时返回 `false`。同步失败时抛出 `Error`。
+首次 clone，或 HEAD 发生变化（新提交 / 切分支）时返回 `true`，已是最新时返回 `false`。同步失败时抛出 `Error`。
+
+### 同步策略
+
+1. `git fetch origin`
+2. 比较本地 `HEAD` 与 upstream（`@{u}` 或 `origin/<branch>`）
+3. 未落后 → 返回 `false`，**不修改工作区**
+4. 落后 → `merge --ff-only` 快进；若失败且 `force: true`，则 reset/clean 后对齐远端 tip
+
+这样不会再走一遍 `git pull` 的二次 fetch，也不会在「其实没更新」时因本地脏文件误清工作区。
 
 ## API
 
@@ -56,12 +65,12 @@ if (updated) {
 | -------- | --------- | --------------- | --------------------------------------------------------------------------------------------- |
 | `cwd`    | `string`  | `process.cwd()` | 目标 git 仓库路径                                                                             |
 | `url`    | `string`  | —               | 远程仓库地址。当 `cwd` 还不是 git 仓库时必填，将执行 `git clone -b <branch>`                  |
-| `branch` | `string`  | `"main"`        | clone 时使用的分支；若在已有仓库上显式传入，会先 checkout 该分支再 `git pull`                 |
-| `force`  | `boolean` | `true`          | 若因本地变更导致拉取失败，自动 `git reset --hard HEAD` + `git clean -fd` 后重试               |
+| `branch` | `string`  | `"main"`        | clone 时使用的分支；若在已有仓库上显式传入，会先 checkout 该分支再同步                        |
+| `force`  | `boolean` | `true`          | 需要更新但被本地变更挡住时，自动 reset/clean 并对齐远端；已是最新时不会触碰工作区             |
 
 #### 返回值
 
-`Promise<boolean>` — 首次 clone，或 HEAD 发生变化（拉取到新提交）时为 `true`。
+`Promise<boolean>` — 首次 clone，或 HEAD 发生变化时为 `true`。
 
 ## 许可证
 

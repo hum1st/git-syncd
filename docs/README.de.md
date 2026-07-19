@@ -1,6 +1,6 @@
 # git-syncd
 
-Halte deine Git-Repositories mit `git pull` synchron (bei Bedarf per `git clone`).
+Halte deine Git-Repositories mit `git fetch` + Fast-Forward synchron (bei Bedarf per `git clone`).
 
 **Verfügbar in:** [English](../README.md) | [中文](README.zh.md) | [Español](README.es.md) | [Français](README.fr.md) | [日本語](README.ja.md)
 
@@ -15,26 +15,17 @@ npm install git-syncd
 ```ts
 import gitSyncd from "git-syncd";
 
-// Aktuelles Arbeitsverzeichnis synchronisieren
 const updated = await gitSyncd();
-
-// Bestimmtes Verzeichnis synchronisieren
 const updated = await gitSyncd({ cwd: "/path/to/repo" });
-
-// Fehlt das Repo lokal, zuerst klonen
 const updated = await gitSyncd({
   cwd: "/path/to/repo",
   url: "https://github.com/org/repo.git",
 });
-
-// Branch angeben (Standard: main)
 const updated = await gitSyncd({
   cwd: "/path/to/repo",
   url: "https://github.com/org/repo.git",
   branch: "develop",
 });
-
-// Bei nicht übernommenen lokalen Änderungen: Verwerfen und trotzdem pullen (Standardverhalten)
 const updated = await gitSyncd({ cwd: "/path/to/repo", force: true });
 
 if (updated) {
@@ -44,24 +35,25 @@ if (updated) {
 }
 ```
 
-Gibt `true` zurück bei frischem Clone oder neuen Commits, sonst `false`. Wirft bei Fehlschlag einen `Error`.
+Gibt `true` zurück bei frischem Clone oder wenn HEAD sich geändert hat, sonst `false`. Wirft bei Fehlschlag einen `Error`.
+
+### Sync-Strategie
+
+1. `git fetch origin`
+2. Vergleich von `HEAD` mit Upstream (`@{u}` oder `origin/<branch>`)
+3. Nicht hinterher → `false`, **Working Tree bleibt unberührt**
+4. Hinterher → Fast-Forward; bei Fehler und `force: true` Reset/Clean und Angleichen an Remote
 
 ## API
 
 ### `gitSyncd(options?)`
 
-#### Optionen
-
-| Option   | Typ       | Standard        | Beschreibung                                                                                                        |
-| -------- | --------- | --------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `cwd`    | `string`  | `process.cwd()` | Pfad zum Ziel-Git-Repository                                                                                        |
-| `url`    | `string`  | —               | Remote-URL. Erforderlich, wenn `cwd` noch kein Git-Repo ist; führt `git clone -b <branch>` aus                      |
-| `branch` | `string`  | `"main"`        | Branch beim Klonen. Bei expliziter Angabe in einem bestehenden Repo: zuerst checkout, dann `git pull`               |
-| `force`  | `boolean` | `true`          | Bei Pull-Fehler wegen lokaler Änderungen: `git reset --hard HEAD` + `git clean -fd` und erneut versuchen            |
-
-#### Rückgabewert
-
-`Promise<boolean>` — `true` bei frischem Clone oder wenn HEAD sich geändert hat.
+| Option   | Typ       | Standard        | Beschreibung                                                                                          |
+| -------- | --------- | --------------- | ----------------------------------------------------------------------------------------------------- |
+| `cwd`    | `string`  | `process.cwd()` | Pfad zum Ziel-Git-Repository                                                                          |
+| `url`    | `string`  | —               | Remote-URL. Erforderlich, wenn `cwd` noch kein Git-Repo ist                                           |
+| `branch` | `string`  | `"main"`        | Branch beim Klonen; bei expliziter Angabe zuerst checkout, dann sync                                  |
+| `force`  | `boolean` | `true`          | Nur wenn ein Update nötig ist und lokale Änderungen blockieren: Reset/Clean und Remote angleichen     |
 
 ## Lizenz
 
