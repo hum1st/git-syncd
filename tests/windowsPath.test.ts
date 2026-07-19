@@ -1,8 +1,27 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import gitSyncd, { sanitizeWindowsPath } from "../src/index";
+
+/** 通过 git 索引写入含 Windows 非法字符的路径（宿主机文件系统往往无法直接创建） */
+function gitAddIndexedPath(
+  cwd: string,
+  repoPath: string,
+  content: string,
+  env: NodeJS.ProcessEnv
+): void {
+  const hash = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+    cwd,
+    input: content,
+    encoding: "utf8",
+    env,
+  }).trim();
+  execFileSync("git", ["update-index", "--add", "--cacheinfo", `100644,${hash},${repoPath}`], {
+    cwd,
+    env,
+  });
+}
 
 describe("sanitizeWindowsPath", () => {
   test("剥离非法字符并保留合法段", () => {
@@ -52,12 +71,10 @@ describe("Windows clone 路径（runtime platform=win32）", () => {
       execSync("git symbolic-ref HEAD refs/heads/main", { cwd: bareDir });
       execSync(`git clone "${bareDir}" "${seedDir}"`);
       fs.writeFileSync(path.join(seedDir, "readme.txt"), "hello");
-      // 含 Windows 非法字符的路径：物化时应被清洗
-      const weirdDir = path.join(seedDir, "docs");
-      fs.mkdirSync(weirdDir, { recursive: true });
-      fs.writeFileSync(path.join(weirdDir, "a:b.txt"), "weird");
       const execOpts = { cwd: seedDir, env: { ...process.env, ...gitEnv } };
-      execSync("git add .", execOpts);
+      execSync("git add readme.txt", execOpts);
+      // 含 Windows 非法字符的路径：经索引写入，物化时应被清洗
+      gitAddIndexedPath(seedDir, "docs/a:b.txt", "weird", execOpts.env);
       execSync('git commit -m "init"', execOpts);
       execSync("git branch -M main", execOpts);
       execSync("git push -u origin main", { cwd: seedDir });
