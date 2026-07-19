@@ -23,13 +23,13 @@
   "scripts": {
     "init": "npm i",
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json",
-    "build:watch": "tsc --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "lint": "eslint src tests",
-    "lint:fix": "eslint src tests --fix",
+    "test": "npm run build && jest --coverage",
+    "test:coverage": "npm run build && jest --coverage",
+    "lint": "eslint src tests scripts",
+    "lint:fix": "eslint src tests scripts --fix",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.esm.json --noEmit",
     "prepare": "husky",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -39,9 +39,24 @@
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
+    "verbose": true,
     "testMatch": [
       "**/tests/**/*.test.ts"
-    ]
+    ],
+    "collectCoverageFrom": [
+      "src/**/*.ts"
+    ],
+    "coverageReporters": [
+      "text"
+    ],
+    "coverageThreshold": {
+      "global": {
+        "branches": 90,
+        "functions": 90,
+        "lines": 95,
+        "statements": 95
+      }
+    }
   },
   "repository": {
     "type": "git",

@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { execSync } from "child_process";
-import { gitSyncd, gitSyncdJob } from "../src/index";
+import gitSyncd from "../src/index";
 
 // 在临时目录创建一个 bare 仓库作为"远端"，再 clone 为本地工作仓库
 function setupRepos(): { bareDir: string; localDir: string; cleanUp: () => void } {
@@ -57,21 +57,18 @@ describe("gitSyncd", () => {
     cleanUp();
   });
 
-  test("具名 export gitSyncd 是函数", () => {
+  test("default export gitSyncd 是函数", () => {
     expect(typeof gitSyncd).toBe("function");
   });
 
-  test("具名 export gitSyncdJob 是函数", () => {
-    expect(typeof gitSyncdJob).toBe("function");
-  });
-
-  test("已是最新时返回 success=true", async () => {
+  test("已是最新时返回 success=true 且 updated=false", async () => {
     const result = await gitSyncd({ cwd: localDir });
     expect(result.success).toBe(true);
+    expect(result.updated).toBe(false);
     expect(result.exitCode).toBe(0);
   });
 
-  test("有新提交时 pull 成功并同步文件", async () => {
+  test("有新提交时 pull 成功并同步文件，updated=true", async () => {
     // 在裸仓库侧通过第二个 clone 推送新内容
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-push-"));
     try {
@@ -87,25 +84,28 @@ describe("gitSyncd", () => {
 
     const result = await gitSyncd({ cwd: localDir });
     expect(result.success).toBe(true);
+    expect(result.updated).toBe(true);
     expect(fs.existsSync(path.join(localDir, "new.txt"))).toBe(true);
   });
 
-  test("无效路径时返回 success=false", async () => {
+  test("无效路径时返回 success=false 且 updated=false", async () => {
     const result = await gitSyncd({ cwd: "/nonexistent/path/xyz" });
     expect(result.success).toBe(false);
+    expect(result.updated).toBe(false);
   });
 
-  test("非 git 仓库时返回 success=false", async () => {
+  test("非 git 仓库时返回 success=false 且 updated=false", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "not-a-repo-"));
     try {
       const result = await gitSyncd({ cwd: tmpDir });
       expect(result.success).toBe(false);
+      expect(result.updated).toBe(false);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  test("force=true 时，本地有未提交变更冲突，仍能拉取成功", async () => {
+  test("force=true 时，本地有未提交变更冲突，仍能拉取成功且 updated=true", async () => {
     // 1. 远端推送新文件 conflict.txt
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-force-"));
     try {
@@ -125,12 +125,13 @@ describe("gitSyncd", () => {
     // 3. force=true（默认）应能成功
     const result = await gitSyncd({ cwd: localDir, force: true });
     expect(result.success).toBe(true);
+    expect(result.updated).toBe(true);
     expect(result.forceReset).toBe(true);
     // 远端内容已被拉取
     expect(fs.readFileSync(path.join(localDir, "conflict.txt"), "utf8")).toBe("remote content");
   });
 
-  test("force=false 时，本地有未提交变更冲突，pull 失败", async () => {
+  test("force=false 时，本地有未提交变更冲突，pull 失败且 updated=false", async () => {
     // 1. 远端推送新文件 conflict2.txt
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-noforce-"));
     try {
@@ -150,71 +151,45 @@ describe("gitSyncd", () => {
     // 3. force=false 不应重置，pull 应失败
     const result = await gitSyncd({ cwd: localDir, force: false });
     expect(result.success).toBe(false);
+    expect(result.updated).toBe(false);
     expect(result.forceReset).toBeUndefined();
   });
-});
 
-describe("gitSyncdJob", () => {
-  let bareDir: string;
-  let localDir: string;
-  let cleanUp: () => void;
-
-  beforeEach(() => {
-    ({ bareDir, localDir, cleanUp } = setupRepos());
-    // suppress unused warning
-    void bareDir;
+  test("未指定 cwd 时使用 process.cwd()", async () => {
+    const prevCwd = process.cwd();
+    try {
+      process.chdir(localDir);
+      const result = await gitSyncd();
+      expect(result.success).toBe(true);
+      expect(result.updated).toBe(false);
+    } finally {
+      process.chdir(prevCwd);
+    }
   });
 
-  afterEach(() => {
-    cleanUp();
+  test("可传入额外 git pull 参数", async () => {
+    const result = await gitSyncd({ cwd: localDir, args: ["--ff-only"] });
+    expect(result.success).toBe(true);
+    expect(result.updated).toBe(false);
   });
 
-  test("启动 job 立即触发一次同步，onSync 被调用", async () => {
-    await new Promise<void>((resolve) => {
-      const job = gitSyncdJob({
-        cwd: localDir,
-        interval: 60_000, // 设长间隔，只验证立即调用
-        onSync: (result) => {
-          expect(result.success).toBe(true);
-          job.stop();
-          resolve();
-        },
-      });
-    });
-  });
+  test("force 默认开启：未传 force 时冲突仍可强制同步", async () => {
+    const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-default-force-"));
+    try {
+      execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
+      fs.writeFileSync(path.join(tmpCloneDir, "default-force.txt"), "remote");
+      const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
+      execSync("git add .", execOpts);
+      execSync('git commit -m "add default-force.txt"', execOpts);
+      execSync("git push", { cwd: tmpCloneDir });
+    } finally {
+      fs.rmSync(tmpCloneDir, { recursive: true, force: true });
+    }
 
-  test("stop() 后不再触发 onSync", async () => {
-    let callCount = 0;
-    await new Promise<void>((resolve) => {
-      const job = gitSyncdJob({
-        cwd: localDir,
-        interval: 50, // 极短间隔
-        onSync: () => {
-          callCount++;
-          if (callCount === 1) {
-            job.stop();
-            // 等待足够长的时间，确认没有第二次调用
-            setTimeout(() => {
-              expect(callCount).toBe(1);
-              resolve();
-            }, 200);
-          }
-        },
-      });
-    });
-  });
-
-  test("返回带有 stop 方法的 job 对象", async () => {
-    await new Promise<void>((resolve) => {
-      const job = gitSyncdJob({
-        cwd: localDir,
-        interval: 60_000,
-        onSync: () => {
-          expect(typeof job.stop).toBe("function");
-          job.stop();
-          resolve();
-        },
-      });
-    });
+    fs.writeFileSync(path.join(localDir, "default-force.txt"), "local");
+    const result = await gitSyncd({ cwd: localDir });
+    expect(result.success).toBe(true);
+    expect(result.updated).toBe(true);
+    expect(result.forceReset).toBe(true);
   });
 });

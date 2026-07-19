@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
-const DIST_ENTRY = path.join(ROOT_DIR, "dist", "index.js");
+const DIST_ENTRY = path.join(ROOT_DIR, "dist", "esm", "index.js");
 const SUBSCRIBER_DIR = path.join(ROOT_DIR, "tmp", "subscriber");
 const SOURCE_LOCAL = path.join(ROOT_DIR, "tmp", "source-repo");
 
@@ -37,7 +37,7 @@ if (!fs.existsSync(DIST_ENTRY)) {
 }
 
 // ── 加载编译后的库（ESM 动态 import）─────────────────────────────────────────
-const { gitSyncd } = await import(pathToFileURL(DIST_ENTRY).href);
+const { default: gitSyncd } = await import(pathToFileURL(DIST_ENTRY).href);
 
 // ── 展示仓库最近提交 ──────────────────────────────────────────────────────────
 function logRepoStatus(label, dir) {

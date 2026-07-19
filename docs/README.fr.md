@@ -12,10 +12,8 @@ npm install git-syncd
 
 ## Utilisation
 
-### `gitSyncd` — Synchronisation unique
-
 ```ts
-import { gitSyncd } from "git-syncd";
+import gitSyncd from "git-syncd";
 
 // Synchroniser le répertoire de travail actuel
 const result = await gitSyncd();
@@ -27,7 +25,11 @@ const result = await gitSyncd({ cwd: "/path/to/repo" });
 const result = await gitSyncd({ cwd: "/path/to/repo", force: true });
 
 if (result.success) {
-  console.log(result.stdout);
+  if (result.updated) {
+    console.log("Nouveaux commits récupérés");
+  } else {
+    console.log("Déjà à jour");
+  }
   if (result.forceReset) {
     console.warn("Les modifications locales ont été supprimées et la synchronisation forcée");
   }
@@ -35,30 +37,6 @@ if (result.success) {
   console.error(result.stderr);
 }
 ```
-
-### `gitSyncdJob` — Synchronisation planifiée
-
-```ts
-import { gitSyncdJob } from "git-syncd";
-
-// Démarrer la synchronisation planifiée (s'exécute immédiatement, puis toutes les 30 secondes)
-const job = gitSyncdJob({
-  cwd: "/path/to/repo",
-  interval: 30_000, // valeur recommandée, valeur par défaut
-  onSync: (result) => {
-    if (result.success) {
-      console.log("[sync] OK", result.stdout);
-    } else {
-      console.error("[sync] FAIL", result.stderr);
-    }
-  },
-});
-
-// Arrêter si nécessaire
-job.stop();
-```
-
-> **Intervalle recommandé** : `30000` (30 secondes). Chaque `git pull` ne transfère des données que lorsqu'il y a de nouveaux commits. Les sondages à vide consomment peu de réseau et de CPU, et un intervalle de 30 secondes maintient le code à jour avec une charge système négligeable.
 
 ## API
 
@@ -77,29 +55,11 @@ job.stop();
 | Champ        | Type      | Description                                                             |
 | ------------ | --------- | ----------------------------------------------------------------------- |
 | `success`    | `boolean` | `true` lorsque le code de sortie est `0`                                |
+| `updated`    | `boolean` | `true` lorsque HEAD a changé (nouveaux commits récupérés)               |
 | `stdout`     | `string`  | Sortie standard                                                         |
 | `stderr`     | `string`  | Sortie d'erreur                                                         |
 | `exitCode`   | `number`  | Code de sortie du processus                                             |
 | `forceReset` | `boolean` | `true` lorsqu'une réinitialisation forcée a été déclenchée, sinon `undefined` |
-
----
-
-### `gitSyncdJob(options?)`
-
-#### Options
-
-Hérite de toutes les options de `gitSyncd`, en plus de :
-
-| Option     | Type                               | Défaut  | Description                                                              |
-| ---------- | ---------------------------------- | ------- | ------------------------------------------------------------------------ |
-| `interval` | `number`                           | `30000` | Intervalle de synchronisation en millisecondes, recommandé `30000`       |
-| `onSync`   | `(result: GitSyncdResult) => void` | —       | Rappel invoqué après chaque synchronisation, utile pour les journaux     |
-
-#### Retourne : `GitSyncdJob`
-
-| Méthode  | Description                           |
-| -------- | ------------------------------------- |
-| `stop()` | Arrêter la synchronisation planifiée  |
 
 ## Licence
 

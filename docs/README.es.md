@@ -12,10 +12,8 @@ npm install git-syncd
 
 ## Uso
 
-### `gitSyncd` — Sincronización única
-
 ```ts
-import { gitSyncd } from "git-syncd";
+import gitSyncd from "git-syncd";
 
 // Sincronizar el directorio de trabajo actual
 const result = await gitSyncd();
@@ -27,7 +25,11 @@ const result = await gitSyncd({ cwd: "/path/to/repo" });
 const result = await gitSyncd({ cwd: "/path/to/repo", force: true });
 
 if (result.success) {
-  console.log(result.stdout);
+  if (result.updated) {
+    console.log("Se obtuvieron nuevos commits");
+  } else {
+    console.log("Ya está actualizado");
+  }
   if (result.forceReset) {
     console.warn("Los cambios locales fueron descartados y se forzó la sincronización");
   }
@@ -35,30 +37,6 @@ if (result.success) {
   console.error(result.stderr);
 }
 ```
-
-### `gitSyncdJob` — Sincronización programada
-
-```ts
-import { gitSyncdJob } from "git-syncd";
-
-// Iniciar sincronización programada (se ejecuta de inmediato y luego cada 30 segundos)
-const job = gitSyncdJob({
-  cwd: "/path/to/repo",
-  interval: 30_000, // valor recomendado, valor predeterminado
-  onSync: (result) => {
-    if (result.success) {
-      console.log("[sync] OK", result.stdout);
-    } else {
-      console.error("[sync] FAIL", result.stderr);
-    }
-  },
-});
-
-// Detener cuando sea necesario
-job.stop();
-```
-
-> **Intervalo recomendado**: `30000` (30 segundos). Cada `git pull` solo transfiere datos cuando hay nuevos commits. El sondeo inactivo consume recursos mínimos de red y CPU, y un intervalo de 30 segundos mantiene el código actualizado con una carga del sistema insignificante.
 
 ## API
 
@@ -77,29 +55,11 @@ job.stop();
 | Campo        | Tipo      | Descripción                                                          |
 | ------------ | --------- | -------------------------------------------------------------------- |
 | `success`    | `boolean` | `true` cuando el código de salida es `0`                             |
+| `updated`    | `boolean` | `true` cuando HEAD cambió (se obtuvieron nuevos commits)             |
 | `stdout`     | `string`  | Salida estándar                                                      |
 | `stderr`     | `string`  | Salida de error                                                      |
 | `exitCode`   | `number`  | Código de salida del proceso                                         |
 | `forceReset` | `boolean` | `true` cuando se activó un reset forzado, de lo contrario `undefined` |
-
----
-
-### `gitSyncdJob(options?)`
-
-#### Opciones
-
-Hereda todas las opciones de `gitSyncd`, además de:
-
-| Opción     | Tipo                               | Predeterminado | Descripción                                                           |
-| ---------- | ---------------------------------- | -------------- | --------------------------------------------------------------------- |
-| `interval` | `number`                           | `30000`        | Intervalo de sincronización en milisegundos, recomendado `30000`      |
-| `onSync`   | `(result: GitSyncdResult) => void` | —              | Callback invocado después de cada sincronización, útil para registros |
-
-#### Retorna: `GitSyncdJob`
-
-| Método   | Descripción                          |
-| -------- | ------------------------------------ |
-| `stop()` | Detener la sincronización programada |
 
 ## Licencia
 
