@@ -1,6 +1,6 @@
 {
   "name": "git-syncd",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Sync a target git branch tip via clone/fetch/fast-forward; Windows-safe worktree materialization",
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
