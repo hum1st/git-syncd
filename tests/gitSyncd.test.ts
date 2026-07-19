@@ -407,4 +407,193 @@ describe("gitSyncd", () => {
     execSync("git checkout -b local-only", { cwd: localDir });
     await expect(gitSyncd({ cwd: localDir })).rejects.toThrow();
   });
+
+  test("远端 force-push 改写历史（非祖先 tip）时，force=true 可硬对齐", async () => {
+    const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-rewrite-"));
+    const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
+    try {
+      execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
+      fs.writeFileSync(path.join(tmpCloneDir, "rewritten.txt"), "v1");
+      execSync("git add .", execOpts);
+      execSync('git commit -m "add rewritten.txt v1"', execOpts);
+      execSync("git push", { cwd: tmpCloneDir });
+
+      expect(await gitSyncd({ cwd: localDir })).toBe(true);
+      expect(fs.readFileSync(path.join(localDir, "rewritten.txt"), "utf8")).toBe("v1");
+      const localBefore = execSync("git rev-parse HEAD", {
+        cwd: localDir,
+        encoding: "utf8",
+      }).trim();
+
+      // amend 后 force-push：新 tip 与本地无祖先关系
+      fs.writeFileSync(path.join(tmpCloneDir, "rewritten.txt"), "v2-amended");
+      execSync("git add .", execOpts);
+      execSync('git commit --amend -m "add rewritten.txt v2-amended"', execOpts);
+      execSync("git push --force", { cwd: tmpCloneDir });
+
+      const remoteTip = execSync("git ls-remote origin refs/heads/main", {
+        cwd: localDir,
+        encoding: "utf8",
+      })
+        .trim()
+        .split(/\s+/)[0];
+      expect(remoteTip).not.toBe(localBefore);
+
+      const updated = await gitSyncd({ cwd: localDir, force: true });
+      expect(updated).toBe(true);
+      expect(fs.readFileSync(path.join(localDir, "rewritten.txt"), "utf8")).toBe("v2-amended");
+      const localAfter = execSync("git rev-parse HEAD", {
+        cwd: localDir,
+        encoding: "utf8",
+      }).trim();
+      expect(localAfter).toBe(remoteTip);
+    } finally {
+      fs.rmSync(tmpCloneDir, { recursive: true, force: true });
+    }
+  });
+
+  test("远端 force-push 改写历史时，force=false 因无法快进而抛错", async () => {
+    const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-rewrite-noforce-"));
+    const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
+    try {
+      execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
+      fs.writeFileSync(path.join(tmpCloneDir, "noforce-rewrite.txt"), "v1");
+      execSync("git add .", execOpts);
+      execSync('git commit -m "add noforce-rewrite.txt v1"', execOpts);
+      execSync("git push", { cwd: tmpCloneDir });
+
+      await gitSyncd({ cwd: localDir });
+      const localBefore = execSync("git rev-parse HEAD", {
+        cwd: localDir,
+        encoding: "utf8",
+      }).trim();
+
+      fs.writeFileSync(path.join(tmpCloneDir, "noforce-rewrite.txt"), "v2");
+      execSync("git add .", execOpts);
+      execSync('git commit --amend -m "add noforce-rewrite.txt v2"', execOpts);
+      execSync("git push --force", { cwd: tmpCloneDir });
+
+      await expect(gitSyncd({ cwd: localDir, force: false })).rejects.toThrow();
+      const localAfter = execSync("git rev-parse HEAD", {
+        cwd: localDir,
+        encoding: "utf8",
+      }).trim();
+      expect(localAfter).toBe(localBefore);
+    } finally {
+      fs.rmSync(tmpCloneDir, { recursive: true, force: true });
+    }
+  });
+
+  test("本地与远端真正发散时，force=true 丢弃本地独有提交并对齐远端", async () => {
+    fs.writeFileSync(path.join(localDir, "local-only.txt"), "local");
+    execSync("git add . && git commit -m 'local only'", {
+      cwd: localDir,
+      env: { ...process.env, ...gitEnv },
+    });
+
+    const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-diverge-"));
+    try {
+      execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
+      fs.writeFileSync(path.join(tmpCloneDir, "remote-only.txt"), "remote");
+      const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
+      execSync("git add .", execOpts);
+      execSync('git commit -m "remote only"', execOpts);
+      execSync("git push", { cwd: tmpCloneDir });
+    } finally {
+      fs.rmSync(tmpCloneDir, { recursive: true, force: true });
+    }
+
+    const updated = await gitSyncd({ cwd: localDir, force: true });
+    expect(updated).toBe(true);
+    expect(fs.existsSync(path.join(localDir, "remote-only.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(localDir, "local-only.txt"))).toBe(false);
+  });
+
+  test("远端 rewind 到祖先 tip 时，force=true 可回退对齐", async () => {
+    const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-rewind-"));
+    const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
+    try {
+      execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
+      const ancestorSha = execSync("git rev-parse HEAD", {
+        cwd: tmpCloneDir,
+        encoding: "utf8",
+      }).trim();
+      fs.writeFileSync(path.join(tmpCloneDir, "later.txt"), "later");
+      execSync("git add .", execOpts);
+      execSync('git commit -m "add later.txt"', execOpts);
+      execSync("git push", { cwd: tmpCloneDir });
+
+      expect(await gitSyncd({ cwd: localDir })).toBe(true);
+      expect(fs.existsSync(path.join(localDir, "later.txt"))).toBe(true);
+
+      execSync(`git reset --hard ${ancestorSha}`, execOpts);
+      execSync("git push --force", { cwd: tmpCloneDir });
+
+      const updated = await gitSyncd({ cwd: localDir, force: true });
+      expect(updated).toBe(true);
+      expect(fs.existsSync(path.join(localDir, "later.txt"))).toBe(false);
+      const localAfter = execSync("git rev-parse HEAD", {
+        cwd: localDir,
+        encoding: "utf8",
+      }).trim();
+      expect(localAfter).toBe(ancestorSha);
+    } finally {
+      fs.rmSync(tmpCloneDir, { recursive: true, force: true });
+    }
+  });
+
+  test("仅本地领先且远端未变时，force=true 会丢弃本地独有提交以对齐远端", async () => {
+    fs.writeFileSync(path.join(localDir, "ahead.txt"), "ahead");
+    execSync("git add . && git commit -m 'local ahead'", {
+      cwd: localDir,
+      env: { ...process.env, ...gitEnv },
+    });
+    const remoteTip = execSync("git rev-parse origin/main", {
+      cwd: localDir,
+      encoding: "utf8",
+    }).trim();
+
+    const updated = await gitSyncd({ cwd: localDir, force: true });
+    expect(updated).toBe(true);
+    expect(fs.existsSync(path.join(localDir, "ahead.txt"))).toBe(false);
+    const localAfter = execSync("git rev-parse HEAD", {
+      cwd: localDir,
+      encoding: "utf8",
+    }).trim();
+    expect(localAfter).toBe(remoteTip);
+  });
+
+  test("远端 rewind 到祖先 tip 时，force=false 因无法快进而抛错", async () => {
+    const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-rewind-noforce-"));
+    const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
+    try {
+      execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
+      const ancestorSha = execSync("git rev-parse HEAD", {
+        cwd: tmpCloneDir,
+        encoding: "utf8",
+      }).trim();
+      fs.writeFileSync(path.join(tmpCloneDir, "later2.txt"), "later");
+      execSync("git add .", execOpts);
+      execSync('git commit -m "add later2.txt"', execOpts);
+      execSync("git push", { cwd: tmpCloneDir });
+
+      await gitSyncd({ cwd: localDir });
+      const localBefore = execSync("git rev-parse HEAD", {
+        cwd: localDir,
+        encoding: "utf8",
+      }).trim();
+
+      execSync(`git reset --hard ${ancestorSha}`, execOpts);
+      execSync("git push --force", { cwd: tmpCloneDir });
+
+      await expect(gitSyncd({ cwd: localDir, force: false })).rejects.toThrow(/fast-forward/);
+      const localAfter = execSync("git rev-parse HEAD", {
+        cwd: localDir,
+        encoding: "utf8",
+      }).trim();
+      expect(localAfter).toBe(localBefore);
+    } finally {
+      fs.rmSync(tmpCloneDir, { recursive: true, force: true });
+    }
+  });
 });

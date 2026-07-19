@@ -34,7 +34,7 @@ const updated = await gitSyncd({
   branch: "develop",
 });
 
-// 确认落后且本地变更挡住更新时，强制丢弃后对齐远端（默认行为）
+// HEAD 与远端 tip 不一致且快进失败时，强制丢弃后对齐远端（默认行为）
 const updated = await gitSyncd({ cwd: "/path/to/repo", force: true });
 
 if (updated) {
@@ -49,11 +49,11 @@ if (updated) {
 ### 同步策略
 
 1. `git fetch origin`
-2. 比较本地 `HEAD` 与 upstream（`@{u}` 或 `origin/<branch>`）
-3. 未落后 → 返回 `false`，**不修改工作区**
-4. 落后 → `merge --ff-only` 快进；若失败且 `force: true`，则 reset/clean 后对齐远端 tip
+2. 比较本地 `HEAD` 与 upstream tip（`@{u}` 或 `origin/<branch>`）
+3. HEAD 已与 tip 一致 → 返回 `false`，**不修改工作区**
+4. 否则 → `merge --ff-only` 快进；若失败且 `force: true`，则 reset/clean 后对齐远端 tip（覆盖本地脏文件、历史改写、rewind、分支发散）
 
-这样不会再走一遍 `git pull` 的二次 fetch，也不会在「其实没更新」时因本地脏文件误清工作区。
+这样不会再走一遍 `git pull` 的二次 fetch，也不会在 HEAD 已对齐时因本地脏文件误清工作区。
 
 ## API
 
@@ -66,7 +66,7 @@ if (updated) {
 | `cwd`    | `string`  | `process.cwd()` | 目标 git 仓库路径                                                                             |
 | `url`    | `string`  | —               | 远程仓库地址。当 `cwd` 还不是 git 仓库时必填，将执行 `git clone -b <branch>`                  |
 | `branch` | `string`  | `"main"`        | clone 时使用的分支；若在已有仓库上显式传入，会先 checkout 该分支再同步                        |
-| `force`  | `boolean` | `true`          | 需要更新但被本地变更挡住时，自动 reset/clean 并对齐远端；已是最新时不会触碰工作区             |
+| `force`  | `boolean` | `true`          | HEAD 与远端 tip 不一致且快进失败时，自动 reset/clean 并对齐远端；已对齐时不会触碰工作区       |
 
 #### 返回值
 

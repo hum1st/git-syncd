@@ -40,9 +40,9 @@ Retourne `true` pour un clone frais ou si HEAD a changé, sinon `false`. Lance u
 ### Stratégie de sync
 
 1. `git fetch origin`
-2. Comparer `HEAD` avec l'upstream (`@{u}` ou `origin/<branch>`)
-3. Pas de retard → `false` **sans toucher le working tree**
-4. En retard → fast-forward ; en cas d'échec et `force: true`, reset/clean puis alignement sur le remote
+2. Comparer `HEAD` avec le tip upstream (`@{u}` ou `origin/<branch>`)
+3. Si `HEAD` correspond déjà au tip → `false` **sans toucher le working tree**
+4. Sinon → fast-forward ; en cas d'échec et `force: true`, reset/clean puis alignement sur le remote (fichiers locaux, historique réécrit, rewind, branches divergentes)
 
 ## API
 
@@ -53,7 +53,7 @@ Retourne `true` pour un clone frais ou si HEAD a changé, sinon `false`. Lance u
 | `cwd`    | `string`  | `process.cwd()` | Chemin du dépôt                                                                               |
 | `url`    | `string`  | —               | URL distante. Requis si `cwd` n'est pas encore un dépôt git                                   |
 | `branch` | `string`  | `"main"`        | Branche au clone ; si fournie sur un dépôt existant, checkout puis sync                       |
-| `force`  | `boolean` | `true`          | Uniquement si une mise à jour est nécessaire et bloquée : reset/clean et alignement remote    |
+| `force`  | `boolean` | `true`          | Si HEAD diffère du tip distant et que le fast-forward échoue : reset/clean et alignement remote |
 
 ## Licence
 

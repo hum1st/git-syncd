@@ -40,9 +40,9 @@ if (updated) {
 ### 同期戦略
 
 1. `git fetch origin`
-2. ローカル `HEAD` と upstream（`@{u}` または `origin/<branch>`）を比較
-3. 遅れなし → `false`（**作業ツリーは触らない**）
-4. 遅れあり → fast-forward。失敗かつ `force: true` なら reset/clean して remote tip に合わせる
+2. ローカル `HEAD` と upstream tip（`@{u}` または `origin/<branch>`）を比較
+3. `HEAD` が tip と一致 → `false`（**作業ツリーは触らない**）
+4. 不一致 → fast-forward。失敗かつ `force: true` なら reset/clean して remote tip に合わせる（ローカル変更・履歴改変・rewind・分岐を含む）
 
 ## API
 
@@ -53,7 +53,7 @@ if (updated) {
 | `cwd`      | `string`  | `process.cwd()` | 対象リポジトリのパス                                                                          |
 | `url`      | `string`  | —               | リモート URL。`cwd` がまだ git リポジトリでない場合は必須                                     |
 | `branch`   | `string`  | `"main"`        | clone 時のブランチ。既存リポジトリで明示した場合は checkout してから同期                      |
-| `force`    | `boolean` | `true`          | 更新が必要でローカル変更に阻まれたときだけ reset/clean して remote に合わせる。最新時は何もしない |
+| `force`    | `boolean` | `true`          | HEAD が remote tip と異なり fast-forward に失敗したとき reset/clean して合わせる。一致時は何もしない |
 
 ## ライセンス
 

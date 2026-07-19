@@ -16,8 +16,9 @@ export interface GitSyncdOptions {
    */
   branch?: string;
   /**
-   * 确认本地落后远端后，若快进更新因本地变更失败，是否强制丢弃本地更改并对齐远端。
-   * 默认为 true。已是最新时不会触碰工作区。
+   * 确认需要更新（HEAD 与远端 tip 不一致）后，若快进失败，是否强制丢弃本地更改并对齐远端。
+   * 覆盖本地脏文件、历史改写/发散等情况。默认为 true。
+   * HEAD 已与远端 tip 一致时不会触碰工作区。
    */
   force?: boolean;
 }
@@ -110,22 +111,22 @@ async function resolveUpstreamRef(cwd: string): Promise<{ ref: string } | { erro
   return { error: originTip.message };
 }
 
-/** 本地相对 upstream 落后的 commit 数，并带回已解析的 tip ref */
-async function getBehindCount(
+/** 解析 upstream tip 的 SHA 与用于对齐的 ref */
+async function resolveUpstreamTip(
   cwd: string
-): Promise<{ count: number; ref: string } | { error: string }> {
+): Promise<{ sha: string; ref: string } | { error: string }> {
   const upstream = await resolveUpstreamRef(cwd);
   if ("error" in upstream) {
     return { error: upstream.error };
   }
 
-  const result = await runGit(cwd, ["rev-list", "--count", `HEAD..${upstream.ref}`]);
-  /* istanbul ignore next -- resolve 成功后 rev-list 仍失败的窗口极窄 */
-  if (!result.ok) {
-    return { error: result.message || "Cannot compare with upstream" };
+  const tip = await runGit(cwd, ["rev-parse", upstream.ref]);
+  /* istanbul ignore next -- resolve 成功后 tip 仍失败的窗口极窄 */
+  if (!tip.ok) {
+    return { error: tip.message || "Cannot resolve upstream tip" };
   }
 
-  return { count: parseInt(result.stdout, 10) || 0, ref: upstream.ref };
+  return { sha: tip.stdout, ref: upstream.ref };
 }
 
 /** clone 远程仓库到 cwd（-b branch） */
@@ -167,10 +168,10 @@ async function ensureBranch(cwd: string, branch: string, force: boolean): Promis
  * 通过子进程同步指定目录的 git 仓库。
  *
  * - 若 `cwd` 尚不是 git 仓库且提供了 `url`，则 `git clone -b <branch>` 初始化；
- * - 否则先 `git fetch`，比较是否落后远端；仅在落后时快进更新。
- * - 若 `force` 为 true（默认），更新因本地变更失败时会先
+ * - 否则先 `git fetch`，比较 HEAD 与远端 tip；不一致时快进更新。
+ * - 若 `force` 为 true（默认），快进失败（本地脏文件、历史改写/发散等）时会先
  *   `git reset --hard HEAD` + `git clean -fd`，再对齐远端 tip。
- * - 已是最新时不会修改工作区（即使存在本地未提交变更）。
+ * - HEAD 已与远端 tip 一致时不会修改工作区（即使存在本地未提交变更）。
  *
  * @returns clone 成功时为 `true`；同步后 HEAD 变化则为 `true`，否则 `false`
  * @throws 同步失败时抛出 Error
@@ -191,7 +192,7 @@ async function gitSyncd(options: GitSyncdOptions = {}): Promise<boolean> {
 
   const headBefore = await getHead(cwd);
 
-  // 先 fetch，再用远端引用判断是否落后（避免无更新时仍 pull / 误 force）
+  // 先 fetch，再用远端 tip 判断是否需要对齐（避免已一致时仍 pull / 误 force）
   const fetch = await runGit(cwd, ["fetch", "origin"]);
   if (!fetch.ok) {
     throw new Error(fetch.message);
@@ -202,21 +203,39 @@ async function gitSyncd(options: GitSyncdOptions = {}): Promise<boolean> {
     await ensureBranch(cwd, branch, force);
   }
 
-  const behind = await getBehindCount(cwd);
-  if ("error" in behind) {
-    throw new Error(behind.error);
+  const upstream = await resolveUpstreamTip(cwd);
+  if ("error" in upstream) {
+    throw new Error(upstream.error);
   }
 
-  if (behind.count === 0) {
-    const headAfter = await getHead(cwd);
-    return headBefore !== null && headAfter !== null && headBefore !== headAfter;
+  const headNow = await getHead(cwd);
+  if (headNow !== null && headNow === upstream.sha) {
+    // 已与远端 tip 一致：不触碰工作区（含本地脏文件）
+    return headBefore !== null && headBefore !== headNow;
   }
 
-  // 已确认落后：用已 fetch 的 tip 快进，不再二次 pull/fetch
-  let update = await runGit(cwd, ["merge", "--ff-only", behind.ref]);
-  if (!update.ok && force) {
+  // tip 为 HEAD 后代时可快进；否则（改写 / rewind / 发散）merge --ff-only 可能
+  // 「Already up to date」却不移动 HEAD，需显式判断后再硬对齐
+  const mergeBase =
+    headNow !== null
+      ? await runGit(cwd, ["merge-base", "HEAD", upstream.ref])
+      : ({ ok: false, message: "no HEAD" } as const);
+  const canFastForward = mergeBase.ok && headNow !== null && mergeBase.stdout === headNow;
+
+  let update: CmdOutcome;
+  if (canFastForward) {
+    update = await runGit(cwd, ["merge", "--ff-only", upstream.ref]);
+    if (!update.ok && force) {
+      await runResetHard(cwd);
+      update = await runGit(cwd, ["reset", "--hard", upstream.ref]);
+    }
+  } else if (force) {
     await runResetHard(cwd);
-    update = await runGit(cwd, ["reset", "--hard", behind.ref]);
+    update = await runGit(cwd, ["reset", "--hard", upstream.ref]);
+  } else {
+    throw new Error(
+      mergeBase.ok ? "Not possible to fast-forward to upstream tip" : mergeBase.message
+    );
   }
 
   if (!update.ok) {

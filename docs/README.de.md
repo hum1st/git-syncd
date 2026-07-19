@@ -40,9 +40,9 @@ Gibt `true` zurück bei frischem Clone oder wenn HEAD sich geändert hat, sonst 
 ### Sync-Strategie
 
 1. `git fetch origin`
-2. Vergleich von `HEAD` mit Upstream (`@{u}` oder `origin/<branch>`)
-3. Nicht hinterher → `false`, **Working Tree bleibt unberührt**
-4. Hinterher → Fast-Forward; bei Fehler und `force: true` Reset/Clean und Angleichen an Remote
+2. Vergleich von `HEAD` mit Upstream-Tip (`@{u}` oder `origin/<branch>`)
+3. `HEAD` bereits am Tip → `false`, **Working Tree bleibt unberührt**
+4. Sonst → Fast-Forward; bei Fehler und `force: true` Reset/Clean und Angleichen an Remote (lokale Änderungen, umgeschriebene Historie, Rewind, divergente Branches)
 
 ## API
 
@@ -53,7 +53,7 @@ Gibt `true` zurück bei frischem Clone oder wenn HEAD sich geändert hat, sonst 
 | `cwd`    | `string`  | `process.cwd()` | Pfad zum Ziel-Git-Repository                                                                          |
 | `url`    | `string`  | —               | Remote-URL. Erforderlich, wenn `cwd` noch kein Git-Repo ist                                           |
 | `branch` | `string`  | `"main"`        | Branch beim Klonen; bei expliziter Angabe zuerst checkout, dann sync                                  |
-| `force`  | `boolean` | `true`          | Nur wenn ein Update nötig ist und lokale Änderungen blockieren: Reset/Clean und Remote angleichen     |
+| `force`  | `boolean` | `true`          | Wenn HEAD vom Remote-Tip abweicht und Fast-Forward scheitert: Reset/Clean und Remote angleichen       |
 
 ## Lizenz
 
