@@ -61,14 +61,12 @@ describe("gitSyncd", () => {
     expect(typeof gitSyncd).toBe("function");
   });
 
-  test("已是最新时返回 success=true 且 updated=false", async () => {
-    const result = await gitSyncd({ cwd: localDir });
-    expect(result.success).toBe(true);
-    expect(result.updated).toBe(false);
-    expect(result.exitCode).toBe(0);
+  test("已是最新时返回 false", async () => {
+    const updated = await gitSyncd({ cwd: localDir });
+    expect(updated).toBe(false);
   });
 
-  test("有新提交时 pull 成功并同步文件，updated=true", async () => {
+  test("有新提交时 pull 成功并同步文件，返回 true", async () => {
     // 在裸仓库侧通过第二个 clone 推送新内容
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-push-"));
     try {
@@ -82,30 +80,25 @@ describe("gitSyncd", () => {
       fs.rmSync(tmpCloneDir, { recursive: true, force: true });
     }
 
-    const result = await gitSyncd({ cwd: localDir });
-    expect(result.success).toBe(true);
-    expect(result.updated).toBe(true);
+    const updated = await gitSyncd({ cwd: localDir });
+    expect(updated).toBe(true);
     expect(fs.existsSync(path.join(localDir, "new.txt"))).toBe(true);
   });
 
-  test("无效路径时返回 success=false 且 updated=false", async () => {
-    const result = await gitSyncd({ cwd: "/nonexistent/path/xyz" });
-    expect(result.success).toBe(false);
-    expect(result.updated).toBe(false);
+  test("无效路径时抛出错误", async () => {
+    await expect(gitSyncd({ cwd: "/nonexistent/path/xyz" })).rejects.toThrow();
   });
 
-  test("非 git 仓库时返回 success=false 且 updated=false", async () => {
+  test("非 git 仓库时抛出错误", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "not-a-repo-"));
     try {
-      const result = await gitSyncd({ cwd: tmpDir });
-      expect(result.success).toBe(false);
-      expect(result.updated).toBe(false);
+      await expect(gitSyncd({ cwd: tmpDir })).rejects.toThrow();
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  test("force=true 时，本地有未提交变更冲突，仍能拉取成功且 updated=true", async () => {
+  test("force=true 时，本地有未提交变更冲突，仍能拉取成功并返回 true", async () => {
     // 1. 远端推送新文件 conflict.txt
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-force-"));
     try {
@@ -123,15 +116,13 @@ describe("gitSyncd", () => {
     fs.writeFileSync(path.join(localDir, "conflict.txt"), "local content");
 
     // 3. force=true（默认）应能成功
-    const result = await gitSyncd({ cwd: localDir, force: true });
-    expect(result.success).toBe(true);
-    expect(result.updated).toBe(true);
-    expect(result.forceReset).toBe(true);
+    const updated = await gitSyncd({ cwd: localDir, force: true });
+    expect(updated).toBe(true);
     // 远端内容已被拉取
     expect(fs.readFileSync(path.join(localDir, "conflict.txt"), "utf8")).toBe("remote content");
   });
 
-  test("force=false 时，本地有未提交变更冲突，pull 失败且 updated=false", async () => {
+  test("force=false 时，本地有未提交变更冲突，pull 失败并抛出错误", async () => {
     // 1. 远端推送新文件 conflict2.txt
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-noforce-"));
     try {
@@ -148,29 +139,19 @@ describe("gitSyncd", () => {
     // 2. 本地也写同名文件
     fs.writeFileSync(path.join(localDir, "conflict2.txt"), "local content");
 
-    // 3. force=false 不应重置，pull 应失败
-    const result = await gitSyncd({ cwd: localDir, force: false });
-    expect(result.success).toBe(false);
-    expect(result.updated).toBe(false);
-    expect(result.forceReset).toBeUndefined();
+    // 3. force=false 不应重置，应抛出错误
+    await expect(gitSyncd({ cwd: localDir, force: false })).rejects.toThrow();
   });
 
   test("未指定 cwd 时使用 process.cwd()", async () => {
     const prevCwd = process.cwd();
     try {
       process.chdir(localDir);
-      const result = await gitSyncd();
-      expect(result.success).toBe(true);
-      expect(result.updated).toBe(false);
+      const updated = await gitSyncd();
+      expect(updated).toBe(false);
     } finally {
       process.chdir(prevCwd);
     }
-  });
-
-  test("可传入额外 git pull 参数", async () => {
-    const result = await gitSyncd({ cwd: localDir, args: ["--ff-only"] });
-    expect(result.success).toBe(true);
-    expect(result.updated).toBe(false);
   });
 
   test("force 默认开启：未传 force 时冲突仍可强制同步", async () => {
@@ -187,9 +168,7 @@ describe("gitSyncd", () => {
     }
 
     fs.writeFileSync(path.join(localDir, "default-force.txt"), "local");
-    const result = await gitSyncd({ cwd: localDir });
-    expect(result.success).toBe(true);
-    expect(result.updated).toBe(true);
-    expect(result.forceReset).toBe(true);
+    const updated = await gitSyncd({ cwd: localDir });
+    expect(updated).toBe(true);
   });
 });

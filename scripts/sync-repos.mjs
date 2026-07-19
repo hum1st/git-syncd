@@ -65,30 +65,10 @@ async function main() {
 
   // ── 执行同步 ────────────────────────────────────────────────────────────────
   console.log("\n⏳ 正在执行 gitSyncd ...");
-  const result = await gitSyncd({ cwd: SUBSCRIBER_DIR });
+  const updated = await gitSyncd({ cwd: SUBSCRIBER_DIR });
 
   console.log("\n─── 同步结果 ───────────────────────────────────────────");
-  console.log(`  success  : ${result.success}`);
-  console.log(`  exitCode : ${result.exitCode}`);
-
-  if (result.stdout.trim()) {
-    console.log(
-      `  stdout   :\n${result.stdout
-        .trim()
-        .split("\n")
-        .map((l) => "    " + l)
-        .join("\n")}`
-    );
-  }
-  if (result.stderr.trim()) {
-    console.log(
-      `  stderr   :\n${result.stderr
-        .trim()
-        .split("\n")
-        .map((l) => "    " + l)
-        .join("\n")}`
-    );
-  }
+  console.log(`  updated  : ${updated}`);
 
   logRepoStatus("同步后 — 订阅仓库", SUBSCRIBER_DIR);
 
@@ -97,15 +77,10 @@ async function main() {
   console.log(`\n📁 订阅仓库当前文件: ${files.join(", ") || "(空)"}`);
 
   console.log("\n═══════════════════════════════════════════════════════");
-  if (result.success) {
-    console.log("✅ 同步成功！");
-  } else {
-    console.error("❌ 同步失败，请检查上方错误信息。");
-    process.exit(1);
-  }
+  console.log("✅ 同步成功！");
 }
 
 main().catch((err) => {
-  console.error("❌ 脚本执行出错:", err);
+  console.error("❌ 同步失败:", err instanceof Error ? err.message : err);
   process.exit(1);
 });
