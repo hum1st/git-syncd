@@ -4,7 +4,7 @@ import * as path from "path";
 import { execFileSync, execSync } from "child_process";
 import gitSyncd, { sanitizeWindowsPath } from "../src/index";
 
-/** 通过 git 索引写入含 Windows 非法字符的路径（宿主机文件系统往往无法直接创建） */
+/** 通过 git 索引写入含 Windows 非法字符的路径（Unix 宿主机可用） */
 function gitAddIndexedPath(
   cwd: string,
   repoPath: string,
@@ -21,6 +21,51 @@ function gitAddIndexedPath(
     cwd,
     env,
   });
+}
+
+/** fast-import 载荷：Windows 宿主机无法用 update-index 写入 docs/a:b.txt */
+function buildWeirdPathFastImportPayload(): Buffer {
+  const chunks: Buffer[] = [];
+  const text = (s: string) => chunks.push(Buffer.from(s, "utf8"));
+  text("blob\nmark :1\ndata 5\n");
+  text("weird");
+  text("\nblob\nmark :2\ndata 6\n");
+  text("hello\n");
+  text(
+    "\ncommit refs/heads/main\n" +
+      "committer Test <test@test.com> 0 +0000\n" +
+      "data 0\n" +
+      "M 100644 :2 readme.txt\n" +
+      "M 100644 :1 docs/a:b.txt\n"
+  );
+  return Buffer.concat(chunks);
+}
+
+/** 在 tmp 下创建含 docs/a:b.txt 的 bare 远端仓库 */
+function setupWeirdPathBareRepo(base: string, env: NodeJS.ProcessEnv): string {
+  const bareDir = path.join(base, "remote.git");
+  const seedDir = path.join(base, "seed");
+
+  execFileSync("git", ["init", "--bare", bareDir], { env });
+  execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/main"], { cwd: bareDir, env });
+  execFileSync("git", ["clone", bareDir, seedDir], { env });
+
+  if (process.platform === "win32") {
+    execFileSync("git", ["fast-import"], {
+      cwd: seedDir,
+      input: buildWeirdPathFastImportPayload(),
+      env,
+    });
+  } else {
+    fs.writeFileSync(path.join(seedDir, "readme.txt"), "hello\n");
+    execFileSync("git", ["add", "readme.txt"], { cwd: seedDir, env });
+    gitAddIndexedPath(seedDir, "docs/a:b.txt", "weird", env);
+    execFileSync("git", ["commit", "-m", "init"], { cwd: seedDir, env });
+  }
+
+  execFileSync("git", ["branch", "-M", "main"], { cwd: seedDir, env });
+  execFileSync("git", ["push", "-u", "origin", "main"], { cwd: seedDir, env });
+  return bareDir;
 }
 
 describe("sanitizeWindowsPath", () => {
@@ -62,26 +107,18 @@ describe("Windows clone 路径（runtime platform=win32）", () => {
 
   test("win32 下 clone 使用 --no-checkout 并物化工作区", async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-win-"));
-    const bareDir = path.join(base, "remote.git");
-    const seedDir = path.join(base, "seed");
+    const bareDir = setupWeirdPathBareRepo(base, { ...process.env, ...gitEnv });
     const targetDir = path.join(base, "local");
 
     try {
-      execSync(`git init --bare "${bareDir}"`);
-      execSync("git symbolic-ref HEAD refs/heads/main", { cwd: bareDir });
-      execSync(`git clone "${bareDir}" "${seedDir}"`);
-      fs.writeFileSync(path.join(seedDir, "readme.txt"), "hello");
-      const execOpts = { cwd: seedDir, env: { ...process.env, ...gitEnv } };
-      execSync("git add readme.txt", execOpts);
-      // 含 Windows 非法字符的路径：经索引写入，物化时应被清洗
-      gitAddIndexedPath(seedDir, "docs/a:b.txt", "weird", execOpts.env);
-      execSync('git commit -m "init"', execOpts);
-      execSync("git branch -M main", execOpts);
-      execSync("git push -u origin main", { cwd: seedDir });
-
-      const updated = await gitSyncd({ cwd: targetDir, url: bareDir, branch: "main" });
+      const updated = await gitSyncd({
+        cwd: targetDir,
+        url: bareDir,
+        branch: "main",
+      });
       expect(updated).toBe(true);
       expect(fs.existsSync(path.join(targetDir, "readme.txt"))).toBe(true);
+      expect(fs.readFileSync(path.join(targetDir, "readme.txt"), "utf8")).toBe("hello\n");
       // a:b.txt → ab.txt
       expect(fs.existsSync(path.join(targetDir, "docs", "ab.txt"))).toBe(true);
       expect(fs.readFileSync(path.join(targetDir, "docs", "ab.txt"), "utf8")).toBe("weird");
