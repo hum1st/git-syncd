@@ -1,8 +1,8 @@
 # git-syncd
 
-`git fetch` + fast-forward で Git リポジトリを同期し続けます（必要なら `git clone` で初期化）。
+`git fetch` + fast-forward で**対象ブランチ**の tip を同期します（必要なら `git clone`）。現在の checkout を切り替えません。
 
-**他の言語：** [English](../README.md) | [中文](README.zh.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Français](README.fr.md)
+**他言語：** [English](../README.md) | [中文](README.zh.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Français](README.fr.md)
 
 ## インストール
 
@@ -21,39 +21,42 @@ const updated = await gitSyncd({
   cwd: "/path/to/repo",
   url: "https://github.com/org/repo.git",
 });
+// 対象ブランチ（既定: main）。現在の checkout とは独立
 const updated = await gitSyncd({
   cwd: "/path/to/repo",
-  url: "https://github.com/org/repo.git",
   branch: "develop",
 });
 const updated = await gitSyncd({ cwd: "/path/to/repo", force: true });
 
 if (updated) {
-  console.log("新しいコミットを取得しました");
+  console.log("対象ブランチの tip が更新されました");
 } else {
-  console.log("すでに最新です");
+  console.log("対象ブランチは最新です");
 }
 ```
 
-新規 clone、または HEAD が変わった場合は `true`、最新なら `false`。失敗時は `Error` を投げます。
+新規 clone、または**対象ブランチ tip** が動いたとき `true`、既に最新なら `false`。失敗時は `Error` を投げます。
 
 ### 同期戦略
 
-1. `git fetch origin`
-2. ローカル `HEAD` と upstream tip（`@{u}` または `origin/<branch>`）を比較
-3. `HEAD` が tip と一致 → `false`（**作業ツリーは触らない**）
-4. 不一致 → fast-forward。失敗かつ `force: true` なら reset/clean して remote tip に合わせる（ローカル変更・履歴改変・rewind・分岐を含む）
+1. 対象ブランチ: `options.branch ?? "main"`
+2. `git fetch origin`
+3. `refs/heads/<target>` と `origin/<target>` を比較
+4. 一致 → `false`（作業ツリーは触らない）
+5. 不一致 → fast-forward；失敗かつ `force: true` なら強制整列
+6. **決して** `checkout` / ブランチ切替をしない
+7. HEAD が既に対象ブランチ上のときだけ作業ツリーを更新
 
 ## API
 
 ### `gitSyncd(options?)`
 
-| オプション | 型        | デフォルト      | 説明                                                                                          |
-| ---------- | --------- | --------------- | --------------------------------------------------------------------------------------------- |
-| `cwd`      | `string`  | `process.cwd()` | 対象リポジトリのパス                                                                          |
-| `url`      | `string`  | —               | リモート URL。`cwd` がまだ git リポジトリでない場合は必須                                     |
-| `branch`   | `string`  | `"main"`        | clone 時のブランチ。既存リポジトリで明示した場合は checkout してから同期                      |
-| `force`    | `boolean` | `true`          | HEAD が remote tip と異なり fast-forward に失敗したとき reset/clean して合わせる。一致時は何もしない |
+| オプション | 型        | 既定            | 説明 |
+| ---------- | --------- | --------------- | ---- |
+| `cwd`      | `string`  | `process.cwd()` | リポジトリパス |
+| `url`      | `string`  | —               | リモート URL（clone 時必須） |
+| `branch`   | `string`  | `"main"`        | 同期する対象ブランチ |
+| `force`    | `boolean` | `true`          | FF 不可時に強制整列。作業ツリー更新は HEAD が対象上のときのみ |
 
 ## ライセンス
 

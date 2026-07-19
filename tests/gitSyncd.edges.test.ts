@@ -67,7 +67,7 @@ describe("gitSyncd 边界分支（mock spawn）", () => {
       if (list.includes("--git-dir")) {
         return createFakeChild({ exitCode: 0, stdout: ".git" });
       }
-      if (list[0] === "rev-parse" && list.includes("HEAD") && !list.includes("--abbrev-ref")) {
+      if (list[0] === "rev-parse" && list.includes("refs/heads/main")) {
         return createFakeChild({ exitCode: 0, stdout: "abc123" });
       }
       if (list[0] === "fetch") {
@@ -85,7 +85,7 @@ describe("gitSyncd 边界分支（mock spawn）", () => {
       if (list.includes("--git-dir")) {
         return createFakeChild({ exitCode: 0, stdout: ".git" });
       }
-      if (list[0] === "rev-parse" && list.includes("HEAD") && !list.includes("--abbrev-ref")) {
+      if (list[0] === "rev-parse" && list.includes("refs/heads/main")) {
         return createFakeChild({ exitCode: 0, stdout: "abc123" });
       }
       if (list[0] === "fetch") {
@@ -97,52 +97,41 @@ describe("gitSyncd 边界分支（mock spawn）", () => {
     await expect(gitSyncd({ cwd: tmpDir })).rejects.toThrow("fetch failed on stdout");
   });
 
-  test("无法解析当前分支时抛出 upstream 错误", async () => {
+  test("无法解析 origin/<branch> 时抛出错误", async () => {
     mockedSpawn.mockImplementation((_cmd, args) => {
       const list = args as string[];
       if (list.includes("--git-dir")) {
         return createFakeChild({ exitCode: 0, stdout: ".git" });
       }
-      if (list[0] === "rev-parse" && list.includes("HEAD") && !list.includes("--abbrev-ref")) {
+      if (list[0] === "rev-parse" && list.includes("refs/heads/main")) {
         return createFakeChild({ exitCode: 0, stdout: "abc123" });
       }
       if (list[0] === "fetch") {
         return createFakeChild({ exitCode: 0, stdout: "" });
       }
-      if (list.includes("@{u}")) {
-        return createFakeChild({ exitCode: 1 });
-      }
-      if (list.includes("--abbrev-ref") && list.includes("HEAD")) {
-        return createFakeChild({ exitCode: 1 });
+      if (list[0] === "rev-parse" && list.includes("origin/main")) {
+        return createFakeChild({ exitCode: 1, stderr: "needed a single revision" });
       }
       return createFakeChild({ exitCode: 1 });
     });
 
-    await expect(gitSyncd({ cwd: tmpDir })).rejects.toThrow(
-      "git rev-parse --abbrev-ref @{u} failed"
-    );
-    expect(mockedSpawn.mock.calls.some((call) => argsOf(call).includes("@{u}"))).toBe(true);
+    await expect(gitSyncd({ cwd: tmpDir })).rejects.toThrow("needed a single revision");
+    expect(mockedSpawn.mock.calls.some((call) => argsOf(call).includes("origin/main"))).toBe(true);
   });
 
-  test("origin/<branch> 解析失败时抛出对应错误", async () => {
+  test("origin/<branch> 解析失败且无 stderr 时使用默认信息", async () => {
     mockedSpawn.mockImplementation((_cmd, args) => {
       const list = args as string[];
       if (list.includes("--git-dir")) {
         return createFakeChild({ exitCode: 0, stdout: ".git" });
       }
-      if (list[0] === "rev-parse" && list.includes("HEAD") && !list.includes("--abbrev-ref")) {
+      if (list[0] === "rev-parse" && list.includes("refs/heads/main")) {
         return createFakeChild({ exitCode: 0, stdout: "abc123" });
       }
       if (list[0] === "fetch") {
         return createFakeChild({ exitCode: 0, stdout: "" });
       }
-      if (list.includes("@{u}")) {
-        return createFakeChild({ exitCode: 1, stderr: "no upstream" });
-      }
-      if (list.includes("--abbrev-ref") && list.includes("HEAD")) {
-        return createFakeChild({ exitCode: 0, stdout: "main" });
-      }
-      if (list.includes("origin/main")) {
+      if (list[0] === "rev-parse" && list.includes("origin/main")) {
         return createFakeChild({ exitCode: 1 });
       }
       return createFakeChild({ exitCode: 1 });

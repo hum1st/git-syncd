@@ -1,6 +1,6 @@
 # git-syncd
 
-Gardez vos dépôts git synchronisés via `git fetch` + fast-forward (et `git clone` si besoin).
+Maintient une **branche cible** à jour via `git fetch` + fast-forward (et `git clone` si besoin). Ne fait jamais de checkout ni de changement de branche courante.
 
 **Disponible en :** [English](../README.md) | [中文](README.zh.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [日本語](README.ja.md)
 
@@ -21,39 +21,42 @@ const updated = await gitSyncd({
   cwd: "/path/to/repo",
   url: "https://github.com/org/repo.git",
 });
+// Branche cible (défaut : main), indépendante du checkout courant
 const updated = await gitSyncd({
   cwd: "/path/to/repo",
-  url: "https://github.com/org/repo.git",
   branch: "develop",
 });
 const updated = await gitSyncd({ cwd: "/path/to/repo", force: true });
 
 if (updated) {
-  console.log("Nouveaux commits récupérés");
+  console.log("Le tip de la branche cible a bougé");
 } else {
-  console.log("Déjà à jour");
+  console.log("La branche cible est déjà à jour");
 }
 ```
 
-Retourne `true` pour un clone frais ou si HEAD a changé, sinon `false`. Lance une `Error` en cas d'échec.
+Retourne `true` en cas de clone ou si le **tip de la branche cible** a changé, sinon `false`. Lève une `Error` en cas d’échec.
 
-### Stratégie de sync
+### Stratégie
 
-1. `git fetch origin`
-2. Comparer `HEAD` avec le tip upstream (`@{u}` ou `origin/<branch>`)
-3. Si `HEAD` correspond déjà au tip → `false` **sans toucher le working tree**
-4. Sinon → fast-forward ; en cas d'échec et `force: true`, reset/clean puis alignement sur le remote (fichiers locaux, historique réécrit, rewind, branches divergentes)
+1. Branche cible : `options.branch ?? "main"`
+2. `git fetch origin`
+3. Comparer `refs/heads/<target>` et `origin/<target>`
+4. Déjà égal → `false` sans toucher l’arbre de travail
+5. Sinon → fast-forward ; avec `force: true`, alignement forcé
+6. **Jamais** de `checkout` / changement de branche
+7. Mettre à jour l’arbre de travail **uniquement si** HEAD est déjà sur la branche cible
 
 ## API
 
 ### `gitSyncd(options?)`
 
-| Option   | Type      | Défaut          | Description                                                                                   |
-| -------- | --------- | --------------- | --------------------------------------------------------------------------------------------- |
-| `cwd`    | `string`  | `process.cwd()` | Chemin du dépôt                                                                               |
-| `url`    | `string`  | —               | URL distante. Requis si `cwd` n'est pas encore un dépôt git                                   |
-| `branch` | `string`  | `"main"`        | Branche au clone ; si fournie sur un dépôt existant, checkout puis sync                       |
-| `force`  | `boolean` | `true`          | Si HEAD diffère du tip distant et que le fast-forward échoue : reset/clean et alignement remote |
+| Option   | Type      | Défaut          | Description |
+| -------- | --------- | --------------- | ----------- |
+| `cwd`    | `string`  | `process.cwd()` | Chemin du dépôt |
+| `url`    | `string`  | —               | URL distante ; requise pour cloner |
+| `branch` | `string`  | `"main"`        | Branche cible à synchroniser |
+| `force`  | `boolean` | `true`          | Si pas de FF, aligner de force ; arbre de travail seulement si HEAD est sur la cible |
 
 ## Licence
 

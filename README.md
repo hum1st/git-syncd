@@ -1,6 +1,6 @@
 # git-syncd
 
-Keep your git repositories in sync via `git fetch` + fast-forward (and `git clone` when needed).
+Keep a **target branch** in sync via `git fetch` + fast-forward (and `git clone` when needed). Never checks out or switches your current branch.
 
 **Available in:** [中文](docs/README.zh.md) | [Deutsch](docs/README.de.md) | [Español](docs/README.es.md) | [Français](docs/README.fr.md) | [日本語](docs/README.ja.md)
 
@@ -15,45 +15,52 @@ npm install git-syncd
 ```ts
 import gitSyncd from "git-syncd";
 
-// Sync the current working directory
+// Sync target branch `main` (default) in the current working directory
 const updated = await gitSyncd();
 
 // Sync a specific directory
 const updated = await gitSyncd({ cwd: "/path/to/repo" });
 
-// Clone if missing, then keep in sync
+// Clone if missing, then keep the target branch in sync
 const updated = await gitSyncd({
   cwd: "/path/to/repo",
   url: "https://github.com/org/repo.git",
 });
 
-// Clone / sync a specific branch (default: main)
+// Target branch (default: main). Independent of the current checkout.
 const updated = await gitSyncd({
   cwd: "/path/to/repo",
   url: "https://github.com/org/repo.git",
   branch: "develop",
 });
 
-// When HEAD differs from remote tip and fast-forward fails, force discard (default)
+// Even if HEAD is on `dev`, this advances local `main` to origin/main
+// without checking out `main`.
+const updated = await gitSyncd({ cwd: "/path/to/repo" });
+
+// When the target tip differs and fast-forward fails, force-align (default)
 const updated = await gitSyncd({ cwd: "/path/to/repo", force: true });
 
 if (updated) {
-  console.log("Pulled new commits");
+  console.log("Target branch tip moved");
 } else {
-  console.log("Already up to date");
+  console.log("Target branch already up to date");
 }
 ```
 
-Returns `true` when the repo was freshly cloned or HEAD moved (new commits / branch switch), `false` when already up to date. Throws an `Error` if the sync fails.
+Returns `true` when the repo was freshly cloned or the **target branch tip** moved, `false` when already up to date. Throws an `Error` if the sync fails.
 
 ### Sync strategy
 
-1. `git fetch origin`
-2. Compare local `HEAD` with upstream tip (`@{u}` or `origin/<branch>`)
-3. If `HEAD` already matches the tip → return `false` **without touching the working tree**
-4. Otherwise → fast-forward (`merge --ff-only`); on failure with `force: true`, reset/clean and align to the remote tip (covers dirty files, rewritten history, rewinds, and diverged branches)
+1. Resolve target branch: `options.branch ?? "main"`
+2. `git fetch origin`
+3. Compare local `refs/heads/<target>` with `origin/<target>`
+4. If already equal → return `false` **without touching the working tree**
+5. Otherwise → fast-forward the target tip; on failure with `force: true`, hard-align to the remote tip
+6. **Never** `checkout` / switch the current branch
+7. Update the working tree **only if** HEAD is already on the target branch; otherwise only move `refs/heads/<target>`
 
-This avoids a second network round-trip from `git pull`, and avoids discarding local changes when HEAD is already aligned.
+This separates “pull the target line to latest” from “switch the working checkout” (left to the caller).
 
 ## API
 
@@ -61,16 +68,16 @@ This avoids a second network round-trip from `git pull`, and avoids discarding l
 
 #### Options
 
-| Option   | Type      | Default         | Description                                                                                                              |
-| -------- | --------- | --------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `cwd`    | `string`  | `process.cwd()` | Target git repository path                                                                                               |
-| `url`    | `string`  | —               | Remote URL. Required when `cwd` is not a git repo yet; runs `git clone -b <branch>`                                      |
-| `branch` | `string`  | `"main"`        | Branch used when cloning. If passed explicitly on an existing repo, checkout that branch before syncing                  |
-| `force`  | `boolean` | `true`          | If HEAD differs from the remote tip and fast-forward fails, run `git reset --hard` + `git clean -fd` and align to remote. No-op when already aligned |
+| Option   | Type      | Default         | Description                                                                 |
+| -------- | --------- | --------------- | --------------------------------------------------------------------------- |
+| `cwd`    | `string`  | `process.cwd()` | Target git repository path                                                  |
+| `url`    | `string`  | —               | Remote URL. Required when `cwd` is not a git repo yet; runs `git clone -b <branch>` |
+| `branch` | `string`  | `"main"`        | Target branch to sync (not necessarily the current checkout)                |
+| `force`  | `boolean` | `true`          | If the target tip cannot fast-forward, hard-align to remote. When HEAD is on the target, also reset/clean the worktree; otherwise only update the branch ref. No-op when already aligned |
 
 #### Returns
 
-`Promise<boolean>` — `true` when freshly cloned or HEAD changed.
+`Promise<boolean>` — `true` when freshly cloned or the target branch tip changed.
 
 ## License
 

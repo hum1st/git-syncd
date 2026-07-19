@@ -217,9 +217,10 @@ describe("gitSyncd", () => {
     }
   });
 
-  test("显式传入 branch 时先 checkout 再同步", async () => {
+  test("显式传入 branch 时只推进目标分支 tip，不 checkout", async () => {
     // 远端创建 develop 分支并推送新文件
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-branch-"));
+    let developTip!: string;
     try {
       execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
       const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
@@ -228,19 +229,30 @@ describe("gitSyncd", () => {
       execSync("git add .", execOpts);
       execSync('git commit -m "add develop.txt"', execOpts);
       execSync("git push -u origin develop", { cwd: tmpCloneDir });
+      developTip = execSync("git rev-parse HEAD", {
+        cwd: tmpCloneDir,
+        encoding: "utf8",
+      }).trim();
     } finally {
       fs.rmSync(tmpCloneDir, { recursive: true, force: true });
     }
 
     const updated = await gitSyncd({ cwd: localDir, branch: "develop" });
     expect(updated).toBe(true);
-    expect(fs.existsSync(path.join(localDir, "develop.txt"))).toBe(true);
+    // 工作区仍在 main，不会出现 develop 文件
+    expect(fs.existsSync(path.join(localDir, "develop.txt"))).toBe(false);
 
     const current = execSync("git rev-parse --abbrev-ref HEAD", {
       cwd: localDir,
       encoding: "utf8",
     }).trim();
-    expect(current).toBe("develop");
+    expect(current).toBe("main");
+
+    const localDevelop = execSync("git rev-parse refs/heads/develop", {
+      cwd: localDir,
+      encoding: "utf8",
+    }).trim();
+    expect(localDevelop).toBe(developTip);
   });
 
   test("clone 时 branch 默认为 main", async () => {
@@ -297,8 +309,9 @@ describe("gitSyncd", () => {
     expect(updated).toBe(false);
   });
 
-  test("本地已 fetch 过目标分支时可以直接 checkout", async () => {
+  test("本地已 fetch 过目标分支时仍只更新 ref、不 checkout", async () => {
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-fetched-branch-"));
+    let topicTip!: string;
     try {
       execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
       const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
@@ -307,6 +320,10 @@ describe("gitSyncd", () => {
       execSync("git add .", execOpts);
       execSync('git commit -m "add topic.txt"', execOpts);
       execSync("git push -u origin topic", { cwd: tmpCloneDir });
+      topicTip = execSync("git rev-parse HEAD", {
+        cwd: tmpCloneDir,
+        encoding: "utf8",
+      }).trim();
     } finally {
       fs.rmSync(tmpCloneDir, { recursive: true, force: true });
     }
@@ -314,11 +331,18 @@ describe("gitSyncd", () => {
     execSync("git fetch origin topic", { cwd: localDir });
     const updated = await gitSyncd({ cwd: localDir, branch: "topic" });
     expect(updated).toBe(true);
-    expect(fs.existsSync(path.join(localDir, "topic.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(localDir, "topic.txt"))).toBe(false);
+    expect(
+      execSync("git rev-parse --abbrev-ref HEAD", { cwd: localDir, encoding: "utf8" }).trim()
+    ).toBe("main");
+    expect(
+      execSync("git rev-parse refs/heads/topic", { cwd: localDir, encoding: "utf8" }).trim()
+    ).toBe(topicTip);
   });
 
-  test("切换 branch 时本地脏文件 + force=true 仍可成功", async () => {
+  test("当前不在目标分支时，脏工作区不阻碍推进目标分支 tip", async () => {
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-branch-force-"));
+    let sideTip!: string;
     try {
       execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
       const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
@@ -327,33 +351,100 @@ describe("gitSyncd", () => {
       execSync("git add .", execOpts);
       execSync('git commit -m "change init on side"', execOpts);
       execSync("git push -u origin side", { cwd: tmpCloneDir });
+      sideTip = execSync("git rev-parse HEAD", {
+        cwd: tmpCloneDir,
+        encoding: "utf8",
+      }).trim();
     } finally {
       fs.rmSync(tmpCloneDir, { recursive: true, force: true });
     }
 
-    // 本地修改会挡住 checkout
     fs.writeFileSync(path.join(localDir, "init.txt"), "local dirty");
     const updated = await gitSyncd({ cwd: localDir, branch: "side", force: true });
     expect(updated).toBe(true);
-    expect(fs.readFileSync(path.join(localDir, "init.txt"), "utf8")).toBe("side content");
+    // 仍在 main，脏文件保留
+    expect(fs.readFileSync(path.join(localDir, "init.txt"), "utf8")).toBe("local dirty");
+    expect(
+      execSync("git rev-parse --abbrev-ref HEAD", { cwd: localDir, encoding: "utf8" }).trim()
+    ).toBe("main");
+    expect(
+      execSync("git rev-parse refs/heads/side", { cwd: localDir, encoding: "utf8" }).trim()
+    ).toBe(sideTip);
   });
 
-  test("切换 branch 时本地脏文件 + force=false 抛出错误", async () => {
+  test("当前不在目标分支且无法快进时，force=false 抛出错误", async () => {
+    // 先让本地存在 side 分支
     const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-branch-noforce-"));
     try {
       execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
       const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
       execSync("git checkout -b other", execOpts);
-      fs.writeFileSync(path.join(tmpCloneDir, "init.txt"), "other content");
+      fs.writeFileSync(path.join(tmpCloneDir, "init.txt"), "other v1");
       execSync("git add .", execOpts);
-      execSync('git commit -m "change init on other"', execOpts);
+      execSync('git commit -m "other v1"', execOpts);
       execSync("git push -u origin other", { cwd: tmpCloneDir });
     } finally {
       fs.rmSync(tmpCloneDir, { recursive: true, force: true });
     }
 
-    fs.writeFileSync(path.join(localDir, "init.txt"), "local dirty");
-    await expect(gitSyncd({ cwd: localDir, branch: "other", force: false })).rejects.toThrow();
+    await gitSyncd({ cwd: localDir, branch: "other" });
+
+    // 远端改写 other（非快进）
+    const rewriteDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-branch-noforce-rw-"));
+    try {
+      execSync(`git clone "${bareDir}" "${rewriteDir}"`);
+      const execOpts = { cwd: rewriteDir, env: { ...process.env, ...gitEnv } };
+      execSync("git checkout other", execOpts);
+      fs.writeFileSync(path.join(rewriteDir, "init.txt"), "other v2");
+      execSync("git add .", execOpts);
+      execSync('git commit --amend -m "other v2"', execOpts);
+      execSync("git push --force", { cwd: rewriteDir });
+    } finally {
+      fs.rmSync(rewriteDir, { recursive: true, force: true });
+    }
+
+    const before = execSync("git rev-parse refs/heads/other", {
+      cwd: localDir,
+      encoding: "utf8",
+    }).trim();
+    await expect(gitSyncd({ cwd: localDir, branch: "other", force: false })).rejects.toThrow(
+      /fast-forward/
+    );
+    expect(
+      execSync("git rev-parse refs/heads/other", { cwd: localDir, encoding: "utf8" }).trim()
+    ).toBe(before);
+  });
+
+  test("当前在 dev 时默认仍同步 main，且不切换分支", async () => {
+    execSync("git checkout -b dev", { cwd: localDir });
+
+    const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-dev-main-"));
+    try {
+      execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
+      fs.writeFileSync(path.join(tmpCloneDir, "on-main.txt"), "hello");
+      const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
+      execSync("git add .", execOpts);
+      execSync('git commit -m "add on-main.txt"', execOpts);
+      execSync("git push origin main", { cwd: tmpCloneDir });
+    } finally {
+      fs.rmSync(tmpCloneDir, { recursive: true, force: true });
+    }
+
+    const mainBefore = execSync("git rev-parse refs/heads/main", {
+      cwd: localDir,
+      encoding: "utf8",
+    }).trim();
+    const updated = await gitSyncd({ cwd: localDir });
+    expect(updated).toBe(true);
+    expect(
+      execSync("git rev-parse --abbrev-ref HEAD", { cwd: localDir, encoding: "utf8" }).trim()
+    ).toBe("dev");
+    expect(fs.existsSync(path.join(localDir, "on-main.txt"))).toBe(false);
+    const mainAfter = execSync("git rev-parse refs/heads/main", {
+      cwd: localDir,
+      encoding: "utf8",
+    }).trim();
+    expect(mainAfter).not.toBe(mainBefore);
   });
 
   test("无 upstream 跟踪时回退到 origin/<branch> 仍可同步", async () => {
@@ -386,12 +477,37 @@ describe("gitSyncd", () => {
     await expect(gitSyncd({ cwd: localDir })).rejects.toThrow();
   });
 
-  test("detached HEAD 无法比较 upstream 时抛出错误", async () => {
+  test("detached HEAD 时仍按默认目标 main 同步，不改变 HEAD", async () => {
+    const detachedBefore = execSync("git rev-parse HEAD", {
+      cwd: localDir,
+      encoding: "utf8",
+    }).trim();
     execSync("git checkout --detach HEAD", { cwd: localDir });
-    await expect(gitSyncd({ cwd: localDir })).rejects.toThrow();
+
+    const tmpCloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-detach-"));
+    try {
+      execSync(`git clone "${bareDir}" "${tmpCloneDir}"`);
+      fs.writeFileSync(path.join(tmpCloneDir, "detach-main.txt"), "hello");
+      const execOpts = { cwd: tmpCloneDir, env: { ...process.env, ...gitEnv } };
+      execSync("git add .", execOpts);
+      execSync('git commit -m "add detach-main.txt"', execOpts);
+      execSync("git push origin main", { cwd: tmpCloneDir });
+    } finally {
+      fs.rmSync(tmpCloneDir, { recursive: true, force: true });
+    }
+
+    const updated = await gitSyncd({ cwd: localDir });
+    expect(updated).toBe(true);
+    expect(
+      execSync("git rev-parse --abbrev-ref HEAD", { cwd: localDir, encoding: "utf8" }).trim()
+    ).toBe("HEAD");
+    expect(execSync("git rev-parse HEAD", { cwd: localDir, encoding: "utf8" }).trim()).toBe(
+      detachedBefore
+    );
+    expect(fs.existsSync(path.join(localDir, "detach-main.txt"))).toBe(false);
   });
 
-  test("空仓库无 HEAD 时仍可完成同步流程", async () => {
+  test("空仓库无提交时，若已在目标分支名上则对齐工作区", async () => {
     const emptyDir = path.join(path.dirname(localDir), "empty-repo");
     fs.mkdirSync(emptyDir, { recursive: true });
     execSync("git init", { cwd: emptyDir });
@@ -399,13 +515,21 @@ describe("gitSyncd", () => {
     execSync(`git remote add origin "${bareDir}"`, { cwd: emptyDir });
 
     const updated = await gitSyncd({ cwd: emptyDir, branch: "main", force: true });
-    expect(updated).toBe(false);
+    expect(updated).toBe(true);
     expect(fs.existsSync(path.join(emptyDir, "init.txt"))).toBe(true);
   });
 
-  test("无 upstream 且 origin 上无同名分支时抛出错误", async () => {
+  test("当前在仅本地分支时，默认仍同步 main 且不切换", async () => {
     execSync("git checkout -b local-only", { cwd: localDir });
-    await expect(gitSyncd({ cwd: localDir })).rejects.toThrow();
+    const updated = await gitSyncd({ cwd: localDir });
+    expect(updated).toBe(false);
+    expect(
+      execSync("git rev-parse --abbrev-ref HEAD", { cwd: localDir, encoding: "utf8" }).trim()
+    ).toBe("local-only");
+  });
+
+  test("目标分支在远端不存在时抛出错误", async () => {
+    await expect(gitSyncd({ cwd: localDir, branch: "no-such-branch" })).rejects.toThrow();
   });
 
   test("远端 force-push 改写历史（非祖先 tip）时，force=true 可硬对齐", async () => {

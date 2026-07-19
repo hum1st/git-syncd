@@ -11,14 +11,16 @@ export interface GitSyncdOptions {
    */
   url?: string;
   /**
-   * 分支名。clone 时使用；若显式传入，也会在已有仓库上先 checkout 再同步。
+   * 要同步的目标分支（与当前 checkout 无关）。
+   * clone 时作为初始分支；已有仓库时只推进该分支的 tip，不会 checkout。
    * 默认为 `main`。
    */
   branch?: string;
   /**
-   * 确认需要更新（HEAD 与远端 tip 不一致）后，若快进失败，是否强制丢弃本地更改并对齐远端。
-   * 覆盖本地脏文件、历史改写/发散等情况。默认为 true。
-   * HEAD 已与远端 tip 一致时不会触碰工作区。
+   * 目标分支 tip 与远端不一致且无法快进时，是否强制将对齐到远端 tip。
+   * 若当前正检出于目标分支，还会 `reset --hard` / `clean` 工作区；
+   * 若当前不在目标分支，仅更新 `refs/heads/<branch>`，不改 HEAD/工作区。
+   * 目标 tip 已与远端一致时不会触碰工作区。默认为 true。
    */
   force?: boolean;
 }
@@ -64,9 +66,9 @@ function runGit(cwd: string, args: string[]): Promise<CmdOutcome> {
   });
 }
 
-/** 获取当前 HEAD commit hash，失败时返回 null */
-async function getHead(cwd: string): Promise<string | null> {
-  const result = await runGit(cwd, ["rev-parse", "HEAD"]);
+/** 解析 ref 的 commit SHA，失败时返回 null */
+async function resolveRef(cwd: string, ref: string): Promise<string | null> {
+  const result = await runGit(cwd, ["rev-parse", ref]);
   return result.ok ? result.stdout : null;
 }
 
@@ -85,48 +87,18 @@ async function runResetHard(cwd: string): Promise<void> {
   await runGit(cwd, ["clean", "-fd"]);
 }
 
-/** 当前分支名 */
+/**
+ * 当前分支名。
+ * 优先 `symbolic-ref`（覆盖尚未产生提交的 unborn 分支）；
+ * detached HEAD 时回退 `rev-parse`（得到 `"HEAD"`）。
+ */
 async function getCurrentBranch(cwd: string): Promise<string | null> {
+  const symbolic = await runGit(cwd, ["symbolic-ref", "--short", "HEAD"]);
+  if (symbolic.ok) {
+    return symbolic.stdout;
+  }
   const result = await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   return result.ok ? result.stdout : null;
-}
-
-/** 解析用于对齐的远端 tip（@{u} 或 origin/<branch>） */
-async function resolveUpstreamRef(cwd: string): Promise<{ ref: string } | { error: string }> {
-  const upstream = await runGit(cwd, ["rev-parse", "--abbrev-ref", "@{u}"]);
-  if (upstream.ok) {
-    return { ref: "@{u}" };
-  }
-
-  const branch = await getCurrentBranch(cwd);
-  if (!branch || branch === "HEAD") {
-    return { error: upstream.message };
-  }
-
-  const originTip = await runGit(cwd, ["rev-parse", `origin/${branch}`]);
-  if (originTip.ok) {
-    return { ref: `origin/${branch}` };
-  }
-
-  return { error: originTip.message };
-}
-
-/** 解析 upstream tip 的 SHA 与用于对齐的 ref */
-async function resolveUpstreamTip(
-  cwd: string
-): Promise<{ sha: string; ref: string } | { error: string }> {
-  const upstream = await resolveUpstreamRef(cwd);
-  if ("error" in upstream) {
-    return { error: upstream.error };
-  }
-
-  const tip = await runGit(cwd, ["rev-parse", upstream.ref]);
-  /* istanbul ignore next -- resolve 成功后 tip 仍失败的窗口极窄 */
-  if (!tip.ok) {
-    return { error: tip.message || "Cannot resolve upstream tip" };
-  }
-
-  return { sha: tip.stdout, ref: upstream.ref };
 }
 
 /** clone 远程仓库到 cwd（-b branch） */
@@ -140,40 +112,51 @@ async function runClone(url: string, cwd: string, branch: string): Promise<void>
   }
 }
 
-/** 切换到指定分支（必要时依赖已 fetch 的 origin/<branch>） */
-async function ensureBranch(cwd: string, branch: string, force: boolean): Promise<void> {
-  const current = await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  if (current.ok && current.stdout === branch) {
-    return;
-  }
+/**
+ * 仅更新目标分支 ref 到 tipSha（不 checkout）。
+ * 本地尚无该分支时等价于创建。
+ */
+async function updateTargetRef(cwd: string, branch: string, tipSha: string): Promise<CmdOutcome> {
+  return runGit(cwd, ["update-ref", `refs/heads/${branch}`, tipSha]);
+}
 
-  let checkout = await runGit(cwd, ["checkout", branch]);
-  if (checkout.ok) {
-    return;
-  }
-
-  if (force) {
+/**
+ * 当前正检出于目标分支时：快进或强制对齐工作区到远端 tip。
+ */
+async function syncCheckedOutTarget(
+  cwd: string,
+  upstreamRef: string,
+  canFastForward: boolean,
+  force: boolean
+): Promise<CmdOutcome> {
+  if (canFastForward) {
+    const update = await runGit(cwd, ["merge", "--ff-only", upstreamRef]);
+    if (update.ok || !force) {
+      return update;
+    }
     await runResetHard(cwd);
+    return runGit(cwd, ["reset", "--hard", upstreamRef]);
   }
 
-  checkout = await runGit(cwd, ["checkout", "-B", branch, `origin/${branch}`]);
-  if (checkout.ok) {
-    return;
+  if (!force) {
+    return { ok: false, message: "Not possible to fast-forward to upstream tip" };
   }
 
-  throw new Error(checkout.message);
+  await runResetHard(cwd);
+  return runGit(cwd, ["reset", "--hard", upstreamRef]);
 }
 
 /**
  * 通过子进程同步指定目录的 git 仓库。
  *
+ * - 目标分支为 `branch`（默认 `main`），与当前 checkout 无关；
  * - 若 `cwd` 尚不是 git 仓库且提供了 `url`，则 `git clone -b <branch>` 初始化；
- * - 否则先 `git fetch`，比较 HEAD 与远端 tip；不一致时快进更新。
- * - 若 `force` 为 true（默认），快进失败（本地脏文件、历史改写/发散等）时会先
- *   `git reset --hard HEAD` + `git clean -fd`，再对齐远端 tip。
- * - HEAD 已与远端 tip 一致时不会修改工作区（即使存在本地未提交变更）。
+ * - 否则 `git fetch` 后推进目标分支 tip 至 `origin/<branch>`（快进；`force` 时允许硬对齐）；
+ * - **不会** `checkout` / 切换当前分支；
+ * - 仅当当前正检出于目标分支时，才会更新工作区；否则只更新 `refs/heads/<branch>`。
+ * - 目标 tip 已与远端一致时不会修改工作区（即使存在本地未提交变更）。
  *
- * @returns clone 成功时为 `true`；同步后 HEAD 变化则为 `true`，否则 `false`
+ * @returns clone 成功，或目标分支 tip 发生变化时为 `true`，否则 `false`
  * @throws 同步失败时抛出 Error
  */
 async function gitSyncd(options: GitSyncdOptions = {}): Promise<boolean> {
@@ -181,6 +164,8 @@ async function gitSyncd(options: GitSyncdOptions = {}): Promise<boolean> {
   const force = options.force !== false; // 默认 true
   const branch = options.branch ?? "main";
   const url = options.url;
+  const upstreamRef = `origin/${branch}`;
+  const localRef = `refs/heads/${branch}`;
 
   if (!(await isGitRepo(cwd))) {
     if (!url) {
@@ -190,48 +175,52 @@ async function gitSyncd(options: GitSyncdOptions = {}): Promise<boolean> {
     return true;
   }
 
-  const headBefore = await getHead(cwd);
+  const tipBefore = await resolveRef(cwd, localRef);
 
-  // 先 fetch，再用远端 tip 判断是否需要对齐（避免已一致时仍 pull / 误 force）
   const fetch = await runGit(cwd, ["fetch", "origin"]);
   if (!fetch.ok) {
     throw new Error(fetch.message);
   }
 
-  // 仅在调用方显式传入 branch 时切换，避免默认 main 破坏已有仓库的当前分支
-  if (options.branch !== undefined) {
-    await ensureBranch(cwd, branch, force);
+  const remoteTip = await resolveRef(cwd, upstreamRef);
+  if (!remoteTip) {
+    const probe = await runGit(cwd, ["rev-parse", upstreamRef]);
+    throw new Error((!probe.ok && probe.message) || `Cannot resolve ${upstreamRef}`);
   }
 
-  const upstream = await resolveUpstreamTip(cwd);
-  if ("error" in upstream) {
-    throw new Error(upstream.error);
+  if (tipBefore !== null && tipBefore === remoteTip) {
+    // 目标分支已与远端 tip 一致：不触碰工作区（含本地脏文件）
+    return false;
   }
 
-  const headNow = await getHead(cwd);
-  if (headNow !== null && headNow === upstream.sha) {
-    // 已与远端 tip 一致：不触碰工作区（含本地脏文件）
-    return headBefore !== null && headBefore !== headNow;
+  const currentBranch = await getCurrentBranch(cwd);
+  const onTarget = currentBranch === branch;
+
+  // 本地尚无目标分支：创建 ref；若碰巧已在该分支名上（空仓库），则硬对齐工作区
+  if (tipBefore === null) {
+    if (onTarget) {
+      await runResetHard(cwd);
+      const reset = await runGit(cwd, ["reset", "--hard", upstreamRef]);
+      if (!reset.ok) {
+        throw new Error(reset.message);
+      }
+    } else {
+      const created = await updateTargetRef(cwd, branch, remoteTip);
+      if (!created.ok) {
+        throw new Error(created.message);
+      }
+    }
+    return true;
   }
 
-  // tip 为 HEAD 后代时可快进；否则（改写 / rewind / 发散）merge --ff-only 可能
-  // 「Already up to date」却不移动 HEAD，需显式判断后再硬对齐
-  const mergeBase =
-    headNow !== null
-      ? await runGit(cwd, ["merge-base", "HEAD", upstream.ref])
-      : ({ ok: false, message: "no HEAD" } as const);
-  const canFastForward = mergeBase.ok && headNow !== null && mergeBase.stdout === headNow;
+  const mergeBase = await runGit(cwd, ["merge-base", localRef, upstreamRef]);
+  const canFastForward = mergeBase.ok && mergeBase.stdout === tipBefore;
 
   let update: CmdOutcome;
-  if (canFastForward) {
-    update = await runGit(cwd, ["merge", "--ff-only", upstream.ref]);
-    if (!update.ok && force) {
-      await runResetHard(cwd);
-      update = await runGit(cwd, ["reset", "--hard", upstream.ref]);
-    }
-  } else if (force) {
-    await runResetHard(cwd);
-    update = await runGit(cwd, ["reset", "--hard", upstream.ref]);
+  if (onTarget) {
+    update = await syncCheckedOutTarget(cwd, upstreamRef, canFastForward, force);
+  } else if (canFastForward || force) {
+    update = await updateTargetRef(cwd, branch, remoteTip);
   } else {
     throw new Error(
       mergeBase.ok ? "Not possible to fast-forward to upstream tip" : mergeBase.message
@@ -242,8 +231,8 @@ async function gitSyncd(options: GitSyncdOptions = {}): Promise<boolean> {
     throw new Error(update.message);
   }
 
-  const headAfter = await getHead(cwd);
-  return headBefore !== null && headAfter !== null && headBefore !== headAfter;
+  const tipAfter = await resolveRef(cwd, localRef);
+  return tipAfter !== null && tipBefore !== tipAfter;
 }
 
 export default gitSyncd;
