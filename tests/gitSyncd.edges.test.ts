@@ -51,6 +51,9 @@ describe("gitSyncd 边界分支（mock spawn）", () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-syncd-edges-"));
+    // 创建合法的 .git/HEAD，使 isGitRepoHealthy 通过（健康检查读取文件系统）
+    fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".git", "HEAD"), "ref: refs/heads/main\n");
     mockedSpawn.mockReset();
   });
 
@@ -66,6 +69,9 @@ describe("gitSyncd 边界分支（mock spawn）", () => {
       const list = args as string[];
       if (list.includes("--git-dir")) {
         return createFakeChild({ exitCode: 0, stdout: ".git" });
+      }
+      if (list[0] === "rev-parse" && list.includes("HEAD")) {
+        return createFakeChild({ exitCode: 0, stdout: "abc123" });
       }
       if (list[0] === "rev-parse" && list.includes("refs/heads/main")) {
         return createFakeChild({ exitCode: 0, stdout: "abc123" });
@@ -85,6 +91,9 @@ describe("gitSyncd 边界分支（mock spawn）", () => {
       if (list.includes("--git-dir")) {
         return createFakeChild({ exitCode: 0, stdout: ".git" });
       }
+      if (list[0] === "rev-parse" && list.includes("HEAD")) {
+        return createFakeChild({ exitCode: 0, stdout: "abc123" });
+      }
       if (list[0] === "rev-parse" && list.includes("refs/heads/main")) {
         return createFakeChild({ exitCode: 0, stdout: "abc123" });
       }
@@ -102,6 +111,9 @@ describe("gitSyncd 边界分支（mock spawn）", () => {
       const list = args as string[];
       if (list.includes("--git-dir")) {
         return createFakeChild({ exitCode: 0, stdout: ".git" });
+      }
+      if (list[0] === "rev-parse" && list.includes("HEAD")) {
+        return createFakeChild({ exitCode: 0, stdout: "abc123" });
       }
       if (list[0] === "rev-parse" && list.includes("refs/heads/main")) {
         return createFakeChild({ exitCode: 0, stdout: "abc123" });
@@ -125,6 +137,9 @@ describe("gitSyncd 边界分支（mock spawn）", () => {
       if (list.includes("--git-dir")) {
         return createFakeChild({ exitCode: 0, stdout: ".git" });
       }
+      if (list[0] === "rev-parse" && list.includes("HEAD")) {
+        return createFakeChild({ exitCode: 0, stdout: "abc123" });
+      }
       if (list[0] === "rev-parse" && list.includes("refs/heads/main")) {
         return createFakeChild({ exitCode: 0, stdout: "abc123" });
       }
@@ -138,5 +153,19 @@ describe("gitSyncd 边界分支（mock spawn）", () => {
     });
 
     await expect(gitSyncd({ cwd: tmpDir })).rejects.toThrow("git rev-parse origin/main failed");
+  });
+
+  test("仓库目录存在但 HEAD 无法解析（损坏仓库）且未传 url 时抛出含提示的错误", async () => {
+    // 覆盖 beforeEach 写入的合法 HEAD，改为无效内容触发损坏检测
+    fs.writeFileSync(path.join(tmpDir, ".git", "HEAD"), "CORRUPTED\n");
+    mockedSpawn.mockImplementation((_cmd, args) => {
+      const list = args as string[];
+      if (list.includes("--git-dir")) {
+        return createFakeChild({ exitCode: 0, stdout: ".git" });
+      }
+      return createFakeChild({ exitCode: 1 });
+    });
+
+    await expect(gitSyncd({ cwd: tmpDir })).rejects.toThrow(/corrupted/);
   });
 });

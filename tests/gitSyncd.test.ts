@@ -720,4 +720,52 @@ describe("gitSyncd", () => {
       fs.rmSync(tmpCloneDir, { recursive: true, force: true });
     }
   });
+
+  test("仓库损坏（HEAD 无法解析）时自动删除目录并重新 clone", async () => {
+    // 模拟 clone 中断：手动构造 .git 目录
+    // HEAD 为 detached 格式（40 位 SHA），使 --git-dir 成功（isGitRepo=true）
+    // 但该 SHA 不对应任何对象 → rev-parse HEAD 失败
+    // 且非 ref: 格式 → symbolic-ref HEAD 也失败 → 视为损坏
+    const corruptDir = path.join(path.dirname(localDir), "corrupt-repo");
+    fs.mkdirSync(path.join(corruptDir, ".git", "refs"), { recursive: true });
+    fs.mkdirSync(path.join(corruptDir, ".git", "objects"), { recursive: true });
+    fs.writeFileSync(
+      path.join(corruptDir, ".git", "HEAD"),
+      "0000000000000000000000000000000000000000\n"
+    );
+    fs.writeFileSync(
+      path.join(corruptDir, ".git", "config"),
+      "[core]\n\trepositoryformatversion = 0\n"
+    );
+
+    // 应能自动修复并返回 true
+    const updated = await gitSyncd({ cwd: corruptDir, url: bareDir });
+    expect(updated).toBe(true);
+    // 重新 clone 后工作区应包含初始文件
+    expect(fs.existsSync(path.join(corruptDir, "init.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(corruptDir, ".git"))).toBe(true);
+    // HEAD 现在应可正常解析
+    const head = execSync("git rev-parse HEAD", { cwd: corruptDir, encoding: "utf8" }).trim();
+    expect(head).toMatch(/^[0-9a-f]{40}$/);
+
+    fs.rmSync(corruptDir, { recursive: true, force: true });
+  });
+
+  test("仓库损坏且未传 url 时抛出含 corrupted 提示的错误", async () => {
+    const corruptDir = path.join(path.dirname(localDir), "corrupt-no-url");
+    fs.mkdirSync(path.join(corruptDir, ".git", "refs"), { recursive: true });
+    fs.mkdirSync(path.join(corruptDir, ".git", "objects"), { recursive: true });
+    fs.writeFileSync(
+      path.join(corruptDir, ".git", "HEAD"),
+      "0000000000000000000000000000000000000000\n"
+    );
+    fs.writeFileSync(
+      path.join(corruptDir, ".git", "config"),
+      "[core]\n\trepositoryformatversion = 0\n"
+    );
+
+    await expect(gitSyncd({ cwd: corruptDir })).rejects.toThrow(/corrupted/);
+
+    fs.rmSync(corruptDir, { recursive: true, force: true });
+  });
 });

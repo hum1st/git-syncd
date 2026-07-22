@@ -95,6 +95,34 @@ async function isGitRepo(cwd: string): Promise<boolean> {
   return result.ok;
 }
 
+/**
+ * 判断 git 仓库是否健康：
+ * - HEAD 为 `ref: refs/...` 格式（含空仓库 unborn 分支）→ 健康
+ * - HEAD 为合法 40 位 SHA 且对应对象存在 → 健康
+ * - 其他（HEAD 内容格式非法、对象丢失等）→ 损坏
+ *
+ * 用于检测 clone 中断等导致的仓库损坏，避免后续 fetch 卡死。
+ */
+async function isGitRepoHealthy(cwd: string): Promise<boolean> {
+  const gitDir = path.join(cwd, ".git");
+  const headFile = path.join(gitDir, "HEAD");
+  let headContent: string;
+  try {
+    headContent = fs.readFileSync(headFile, "utf8").trim();
+  } catch {
+    return false;
+  }
+  // unborn 分支（空仓库）或正常分支引用
+  if (headContent.startsWith("ref: refs/")) return true;
+  // detached HEAD：40 位 SHA，检查对象是否实际存在
+  if (/^[0-9a-f]{40}$/.test(headContent)) {
+    const result = await runGit(cwd, ["cat-file", "-e", headContent]);
+    return result.ok;
+  }
+  // 其他格式（如截断内容、乱码）→ 损坏
+  return false;
+}
+
 /** 底层：执行 git reset --hard HEAD 并 git clean -fd，丢弃所有本地变更（含未追踪文件） */
 async function runResetHard(cwd: string): Promise<void> {
   await runGit(cwd, ["reset", "--hard", "HEAD"]);
@@ -310,6 +338,20 @@ async function gitSyncd(options: GitSyncdOptions = {}): Promise<boolean> {
     if (!url) {
       throw new Error(`not a git repository: ${cwd}. Pass options.url to clone and initialize.`);
     }
+    await runClone(url, cwd, branch);
+    return true;
+  }
+
+  // 仓库目录存在但 HEAD 无法解析（如 clone 中断导致仓库损坏），
+  // 删除目录后重新 clone，而不是继续同步（否则会卡死直至超时）。
+  if (!(await isGitRepoHealthy(cwd))) {
+    if (!url) {
+      throw new Error(
+        `git repository at ${cwd} is corrupted (HEAD cannot be resolved). ` +
+          `Pass options.url to re-clone and repair.`
+      );
+    }
+    fs.rmSync(cwd, { recursive: true, force: true });
     await runClone(url, cwd, branch);
     return true;
   }
