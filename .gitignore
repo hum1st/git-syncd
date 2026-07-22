@@ -4,3 +4,5 @@ coverage/
 *.js.map
 *.d.ts.map
 tmp/
+
+.DS_Store
